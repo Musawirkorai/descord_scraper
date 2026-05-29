@@ -290,5 +290,4 @@ batches and 2s between channels. Discord allows ~50 req/s per bot, so this is sa
 re-calling the API for identical requests.
 
 **GitHub API**: 60 req/h unauthenticated, 5000/h with a PAT token.
-#   d e s c o r d _ s c r a p e r  
- 
+#
