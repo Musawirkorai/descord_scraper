@@ -6,6 +6,8 @@ const { broadcastEvent } = require('../services/websocket');
 const { syncServerAndChannels } = require('../services/syncService');
 const { connectDB } = require('../config/database');
 const { connectRedis } = require('../config/redis');
+const { saveMessageWithFiles } = require('../services/messageService');
+const Channel = require('../models/Channel');
 
 const client = new Client({
   intents: [
@@ -76,5 +78,30 @@ client.login(process.env.DISCORD_BOT_TOKEN).catch(err => {
   logger.error('Discord login failed:', err);
   process.exit(1);
 });
+client.on('messageCreate', async (msg) => {
+  if (msg.author.bot) return;
+  if (!msg.guild) return;
 
-module.exports = client;
+  // Only process messages from the configured server
+  if (msg.guild.id !== process.env.DISCORD_GUILD_ID) return;
+
+  try {
+    // Check if this channel has scraping enabled
+    const channel = await Channel.findOne({ 
+      discordId: msg.channelId, 
+      scrapeEnabled: true 
+    });
+    
+    if (!channel) return;
+
+    await saveMessageWithFiles(msg);
+    broadcastEvent('new_message', { 
+      channelId: msg.channelId,
+      serverId: msg.guild.id 
+    });
+
+  } catch (err) {
+    logger.error('messageCreate error:', err.message);
+  }
+});
+module.exports = { client };

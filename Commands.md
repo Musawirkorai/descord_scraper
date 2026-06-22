@@ -21,3 +21,10 @@ Invoke-WebRequest -Uri "http://localhost:4000/api/analytics/trends" -Method POST
 
 Summary — 3 Terminals Always Running
 TerminalWhat runsCommand1Discord Botnode src/bot/index.js2API Servernode src/index.js3Your commandsAPI calls
+
+
+descord chanel chat extractor
+
+debug commands 
+ node src/debug-subnets.js   
+ node src/run-subnets-now.js   

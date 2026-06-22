@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const logger = require('../utils/logger');
-const { saveMessage } = require('./messageService');
+// const { saveMessage } = require('./messageService');
+const { saveMessageWithFiles } = require('./messageService');
 const Channel = require('../models/Channel');
 
 const BATCH_SIZE = 100; // Discord API max per request
@@ -36,7 +37,8 @@ async function backfillChannel(discordClient, channelId, options = {}) {
 
     for (const msg of sorted) {
       if (msg.author.bot) continue;
-      await saveMessage(msg);
+      await saveMessageWithFiles(msg);
+
     }
 
     totalFetched += sorted.length;

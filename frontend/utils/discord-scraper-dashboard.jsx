@@ -402,90 +402,90 @@ function ServersPage() {
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
-function MessagesPage() {
-  const [search, setSearch] = useState("");
-  const [sourceFilter, setSourceFilter] = useState("all");
-  const [sentimentFilter, setSentimentFilter] = useState("all");
+// function MessagesPage() {
+//   const [search, setSearch] = useState("");
+//   const [sourceFilter, setSourceFilter] = useState("all");
+//   const [sentimentFilter, setSentimentFilter] = useState("all");
 
-  const filtered = MOCK_MESSAGES.filter(m => {
-    if (search && !m.content.toLowerCase().includes(search.toLowerCase()) && !m.authorUsername.toLowerCase().includes(search.toLowerCase())) return false;
-    if (sourceFilter !== "all" && m.source !== sourceFilter) return false;
-    if (sentimentFilter !== "all" && m.sentiment !== sentimentFilter) return false;
-    return true;
-  });
+//   const filtered = MOCK_MESSAGES.filter(m => {
+//     if (search && !m.content.toLowerCase().includes(search.toLowerCase()) && !m.authorUsername.toLowerCase().includes(search.toLowerCase())) return false;
+//     if (sourceFilter !== "all" && m.source !== sourceFilter) return false;
+//     if (sentimentFilter !== "all" && m.sentiment !== sentimentFilter) return false;
+//     return true;
+//   });
 
-  const timeAgo = (iso) => {
-    const diff = Date.now() - new Date(iso).getTime();
-    const h = Math.floor(diff / 3600000);
-    if (h < 1) return `${Math.floor(diff / 60000)}m ago`;
-    if (h < 24) return `${h}h ago`;
-    return `${Math.floor(h / 24)}d ago`;
-  };
+//   const timeAgo = (iso) => {
+//     const diff = Date.now() - new Date(iso).getTime();
+//     const h = Math.floor(diff / 3600000);
+//     if (h < 1) return `${Math.floor(diff / 60000)}m ago`;
+//     if (h < 24) return `${h}h ago`;
+//     return `${Math.floor(h / 24)}d ago`;
+//   };
 
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-bold text-white">Messages</h2>
-          <p className="text-xs text-zinc-500 mt-0.5">{filtered.length} results</p>
-        </div>
-        <button className="flex items-center gap-1.5 px-3 py-1.5 bg-white/[0.04] border border-white/[0.07] rounded-lg text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
-          <Icon path={ICONS.download} size={13} />Export CSV
-        </button>
-      </div>
+//   return (
+//     <div className="space-y-4">
+//       <div className="flex items-center justify-between">
+//         <div>
+//           <h2 className="text-lg font-bold text-white">Messages</h2>
+//           <p className="text-xs text-zinc-500 mt-0.5">{filtered.length} results</p>
+//         </div>
+//         <button className="flex items-center gap-1.5 px-3 py-1.5 bg-white/[0.04] border border-white/[0.07] rounded-lg text-xs text-zinc-400 hover:text-zinc-200 transition-colors">
+//           <Icon path={ICONS.download} size={13} />Export CSV
+//         </button>
+//       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-3">
-        <div className="flex-1 relative">
-          <Icon path={ICONS.search} size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600" />
-          <input value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Search messages or authors…"
-            className="w-full bg-white/[0.04] border border-white/[0.07] rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-indigo-500/40" />
-        </div>
-        <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}
-          className="bg-white/[0.04] border border-white/[0.07] rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none">
-          <option value="all">All Sources</option>
-          <option value="discord">Discord</option>
-          <option value="github">GitHub</option>
-          <option value="twitter">Twitter</option>
-        </select>
-        <select value={sentimentFilter} onChange={e => setSentimentFilter(e.target.value)}
-          className="bg-white/[0.04] border border-white/[0.07] rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none">
-          <option value="all">All Sentiment</option>
-          <option value="positive">Positive</option>
-          <option value="neutral">Neutral</option>
-          <option value="negative">Negative</option>
-        </select>
-      </div>
+//       {/* Filters */}
+//       <div className="flex items-center gap-3">
+//         <div className="flex-1 relative">
+//           <Icon path={ICONS.search} size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600" />
+//           <input value={search} onChange={e => setSearch(e.target.value)}
+//             placeholder="Search messages or authors…"
+//             className="w-full bg-white/[0.04] border border-white/[0.07] rounded-lg pl-9 pr-4 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-indigo-500/40" />
+//         </div>
+//         <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}
+//           className="bg-white/[0.04] border border-white/[0.07] rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none">
+//           <option value="all">All Sources</option>
+//           <option value="discord">Discord</option>
+//           <option value="github">GitHub</option>
+//           <option value="twitter">Twitter</option>
+//         </select>
+//         <select value={sentimentFilter} onChange={e => setSentimentFilter(e.target.value)}
+//           className="bg-white/[0.04] border border-white/[0.07] rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none">
+//           <option value="all">All Sentiment</option>
+//           <option value="positive">Positive</option>
+//           <option value="neutral">Neutral</option>
+//           <option value="negative">Negative</option>
+//         </select>
+//       </div>
 
-      {/* Message list */}
-      <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
-        <div className="divide-y divide-white/[0.04]">
-          {filtered.map(msg => (
-            <div key={msg._id} className="px-4 py-3 hover:bg-white/[0.02] transition-colors">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-3 min-w-0">
-                  <div className="w-7 h-7 shrink-0 rounded-full bg-gradient-to-br from-indigo-600/30 to-violet-600/30 border border-white/10 flex items-center justify-center text-xs font-bold text-indigo-300 mt-0.5">
-                    {msg.authorUsername[0].toUpperCase()}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-medium text-white">{msg.authorUsername}</span>
-                      <Badge color={msg.source === "github" ? "gray" : msg.source === "twitter" ? "blue" : "purple"}>{msg.source}</Badge>
-                      <span className={`text-xs ${sentimentColor(msg.sentiment)}`}>● {msg.sentiment}</span>
-                    </div>
-                    <p className="text-sm text-zinc-400 mt-1 leading-relaxed">{msg.content}</p>
-                  </div>
-                </div>
-                <span className="text-xs text-zinc-600 shrink-0 mt-1">{timeAgo(msg.discordCreatedAt)}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
+//       {/* Message list */}
+//       <div className="bg-white/[0.03] border border-white/[0.06] rounded-xl overflow-hidden">
+//         <div className="divide-y divide-white/[0.04]">
+//           {filtered.map(msg => (
+//             <div key={msg._id} className="px-4 py-3 hover:bg-white/[0.02] transition-colors">
+//               <div className="flex items-start justify-between gap-3">
+//                 <div className="flex items-start gap-3 min-w-0">
+//                   <div className="w-7 h-7 shrink-0 rounded-full bg-gradient-to-br from-indigo-600/30 to-violet-600/30 border border-white/10 flex items-center justify-center text-xs font-bold text-indigo-300 mt-0.5">
+//                     {msg.authorUsername[0].toUpperCase()}
+//                   </div>
+//                   <div className="min-w-0">
+//                     <div className="flex items-center gap-2 flex-wrap">
+//                       <span className="text-sm font-medium text-white">{msg.authorUsername}</span>
+//                       <Badge color={msg.source === "github" ? "gray" : msg.source === "twitter" ? "blue" : "purple"}>{msg.source}</Badge>
+//                       <span className={`text-xs ${sentimentColor(msg.sentiment)}`}>● {msg.sentiment}</span>
+//                     </div>
+//                     <p className="text-sm text-zinc-400 mt-1 leading-relaxed">{msg.content}</p>
+//                   </div>
+//                 </div>
+//                 <span className="text-xs text-zinc-600 shrink-0 mt-1">{timeAgo(msg.discordCreatedAt)}</span>
+//               </div>
+//             </div>
+//           ))}
+//         </div>
+//       </div>
+//     </div>
+//   );
+// }
 
 // ── AI Analytics ──────────────────────────────────────────────────────────────
 function AnalyticsPage() {

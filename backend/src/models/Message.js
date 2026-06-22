@@ -8,6 +8,7 @@ const attachmentSchema = new mongoose.Schema({
   url: String,
 }, { _id: false });
 
+
 const messageSchema = new mongoose.Schema({
   discordId: { type: String, required: true, unique: true, index: true },
   channelId: { type: String, required: true, index: true },
@@ -18,6 +19,7 @@ const messageSchema = new mongoose.Schema({
   authorAvatar: String,
   content: { type: String, default: '' },
   cleanContent: String,
+  extractedText: { type: String, default: null },
   embeds: [mongoose.Schema.Types.Mixed],
   attachments: [attachmentSchema],
   reactions: [mongoose.Schema.Types.Mixed],
@@ -40,5 +42,6 @@ messageSchema.index({ serverId: 1, authorId: 1, discordCreatedAt: -1 });
 messageSchema.index({ content: 'text', cleanContent: 'text' }); // Full-text search
 messageSchema.index({ keywords: 1 });
 messageSchema.index({ discordCreatedAt: -1 });
+
 
 module.exports = mongoose.model('Message', messageSchema);

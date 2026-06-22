@@ -78,4 +78,48 @@ async function saveExternalMessage(data) {
   );
 }
 
-module.exports = { saveMessage, saveMessages, saveExternalMessage, transformMessage };
+const axios = require('axios');
+
+// Add this helper
+async function extractTextFromAttachments(attachments) {
+  const textTypes = ['text/plain', 'text/markdown', 'application/json'];
+  const results = [];
+
+  for (const a of attachments) {
+    const isText = textTypes.some(t => a.contentType?.includes(t))
+      || a.filename?.match(/\.(txt|md|log|json|csv)$/i);
+
+    if (isText) {
+      try {
+        const res = await axios.get(a.url, { responseType: 'text', timeout: 5000 });
+        results.push(`[${a.filename}]:\n${res.data.substring(0, 3000)}`);
+      } catch (e) {
+        // skip unreadable files
+      }
+    }
+  }
+
+  return results.join('\n\n') || null;
+}
+
+async function saveMessageWithFiles(msg) {
+  console.log(`📎 saveMessageWithFiles called — attachments: ${msg.attachments?.size}`);
+  const data = transformMessage(msg);
+
+  if (msg.attachments?.size > 0) {
+    const attachmentList = [...msg.attachments.values()];
+    console.log(`📄 Attachment filenames:`, attachmentList.map(a => a.filename));
+    data.extractedText = await extractTextFromAttachments(attachmentList);
+    console.log(`✅ extractedText result:`, data.extractedText ? data.extractedText.substring(0, 100) : 'NULL');
+  }
+
+  return Message.findOneAndUpdate(
+    { discordId: data.discordId },
+    { $set: data },
+    { upsert: true, new: true }
+  );
+}
+
+module.exports = { saveMessage, saveMessages, saveExternalMessage, transformMessage, saveMessageWithFiles };
+
+// module.exports = { saveMessage, saveMessages, saveExternalMessage, transformMessage };

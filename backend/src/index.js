@@ -10,6 +10,8 @@ const { connectRedis } = require('./config/redis');
 const { initWebSocket } = require('./services/websocket');
 const logger = require('./utils/logger');
 const rateLimit = require('express-rate-limit');
+const { startScheduler } = require('./services/subnetScheduler');
+const { client } = require('./bot/index');
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -40,6 +42,7 @@ app.use('/api/channels', channelRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/scraper', scraperRoutes);
+app.use("/api/subnets", require("./routes/subnet_routes"));
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
@@ -56,9 +59,28 @@ async function bootstrap() {
   await connectDB();
   await connectRedis();
   initWebSocket(httpServer);
+  
+  // Start Express server
   httpServer.listen(PORT, () => logger.info(`🚀 Server running on port ${PORT}`));
+
+  // 2. Safely initialize the Discord scheduler hook here
+  if (client) {
+    client.once('ready', () => {
+      if (!process.env.DISCORD_GUILD_ID) {
+        logger.warn('⚠️ DISCORD_GUILD_ID is missing from your .env file! Scheduler skipped.');
+        return;
+      }
+      startScheduler(client, process.env.DISCORD_GUILD_ID);
+      logger.info('🚀 Discord client ready and subnet scheduler started.');
+    });
+  } else {
+    logger.error('❌ Discord client instance could not be loaded from the bot folder.');
+  }
 }
 
-bootstrap().catch(err => { logger.error('Bootstrap failed:', err); process.exit(1); });
+bootstrap().catch(err => { 
+  logger.error('Bootstrap failed:', err); 
+  process.exit(1); 
+});
 
 module.exports = app;
