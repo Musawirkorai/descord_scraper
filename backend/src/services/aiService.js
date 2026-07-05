@@ -665,6 +665,153 @@ Answer in clear bullet points. Mark anything uncertain as LOW CONFIDENCE.`;
   return result;
 }
 
+async function analyzeTextFile(fileContent, targetName, analysisType = "full") {
+  const MAX_CHARS = 100000;
+  const truncated =
+    fileContent.length > MAX_CHARS
+      ? fileContent.substring(0, MAX_CHARS) + "\n[Content truncated...]"
+      : fileContent;
+
+  // Count approximate messages for messageCount field
+  const approxMsgCount = (fileContent.match(/\n[A-Za-z]/g) || []).length;
+
+  const prompt = `You are a SUBNET INTELLIGENCE ANALYST for the Bittensor ecosystem.
+Analyze the following Discord channel content for "${targetName}".
+
+ANALYSIS REQUIREMENTS:
+- Extract EVERY topic discussed, no matter how minor — exhaustiveness is critical
+- Ground every claim in the actual content — never invent facts
+- Be specific: use exact feature names, error messages, and terminology from the chat
+
+CONTENT:
+${truncated}
+
+Return ONLY this JSON — no markdown, no preamble:
+{
+  "subnetName": "official name of this subnet (e.g. 'Data Universe' or 'Apex')",
+  "oneLiner": "one punchy sentence summarizing what this subnet does and its current state",
+  "briefDescription": "2-3 sentence overview of the subnet and the main themes from this period",
+  "scoreLabel": "Strong Buy|Buy|Hold|Caution|Avoid — matching the investability score",
+
+  "overallSentiment": "positive|negative|neutral|mixed",
+  "sentimentDetail": "1-2 sentences explaining WHY the sentiment is what it is, based on actual chat",
+
+  "investabilityScore": 7.5,
+  "investabilityBreakdown": {
+    "technology": 7.0,
+    "teamExecution": 8.0,
+    "commercialPotential": 6.5,
+    "economicMaturity": 6.0,
+    "decentralization": 7.0
+  },
+
+  "mainTopics": [
+    {
+      "title": "Exact topic name close to how it was discussed",
+      "description": "2-3 sentence summary of what was discussed on this topic",
+      "bulletPoints": [
+        "specific point 1 from the chat",
+        "specific point 2 from the chat",
+        "specific point 3 from the chat"
+      ]
+    }
+  ],
+
+  "positives": [
+    {
+      "category": "Short label e.g. 'Active Development Team'",
+      "detail": "2-3 sentences explaining why this is a positive signal with specific evidence from chat",
+      "score": 8.5
+    }
+  ],
+
+  "concerns": [
+    {
+      "category": "Short label e.g. 'Validator Scoring Issues'",
+      "detail": "2-3 sentences explaining the concern with specific evidence from the chat",
+      "score": 5.0
+    }
+  ],
+
+  "bottomLine": "2-3 sentence investment summary — what kind of investor should consider this and why",
+  "whatImpresses": "The single most impressive thing about this subnet based on the chat",
+  "raiseTo9": "What specific development would push the investability score to 9/10",
+  "lowerRating": "What specific development or failure would lower the score significantly",
+  "comparisonContext": "How this subnet compares to others in the Bittensor ecosystem based on what is discussed",
+
+  "emergingSignals": [
+    {
+      "signal": "Signal name",
+      "description": "What was said or repeated in the chat",
+      "evidence": "Short direct reference from the chat — keep under 15 words",
+      "confidence": "HIGH|MEDIUM|LOW"
+    }
+  ],
+
+  "userIssues": [
+    "Specific problem explicitly mentioned by users in the chat"
+  ],
+
+  "openQuestions": [
+    "Unresolved question or debate explicitly raised in the chat"
+  ],
+
+  "developmentsToWatch": [
+    "Specific future development mentioned or implied that would meaningfully change the subnet's trajectory"
+  ],
+
+  "messageCount": 0,
+  "analyzedDays": 30
+}
+
+HARD RULES:
+- mainTopics must list EVERY distinct topic discussed — aim for 6-12 topics minimum if the content is rich
+- Each mainTopics entry needs at least 3 bulletPoints with specific details
+- positives and concerns must each have 3-5 entries with real evidence
+- developmentsToWatch must have 5-8 specific items
+- investabilityScore must be a number between 1.0 and 10.0
+- scoreLabel must match: 9-10=Strong Buy, 7-8.9=Buy, 5-6.9=Hold, 3-4.9=Caution, 1-2.9=Avoid
+- All breakdown scores must be numbers between 1.0 and 10.0
+- Never use null — use empty arrays [] for missing array fields, empty string "" for missing strings`;
+
+  const response = await openai.chat.completions.create({
+    model: MODEL,
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.1,
+    max_tokens: 4000,
+  });
+
+  let result;
+  try {
+    const text = response.choices[0].message.content
+      .replace(/```json|```/g, "")
+      .trim();
+    result = JSON.parse(text);
+  } catch {
+    result = {
+      subnetName: targetName,
+      oneLiner: "Analysis parsing failed.",
+      briefDescription: response.choices[0].message.content.substring(0, 200),
+      investabilityScore: null,
+      mainTopics: [],
+      positives: [],
+      concerns: [],
+      emergingSignals: [],
+      userIssues: [],
+      openQuestions: [],
+      developmentsToWatch: [],
+      overallSentiment: "neutral",
+    };
+  }
+
+  // Ensure messageCount is set
+  if (!result.messageCount || result.messageCount === 0) {
+    result.messageCount = approxMsgCount;
+  }
+
+  return result;
+}
+
 module.exports = {
   generateDailySummary,
   analyzeTrends,

@@ -34,7 +34,7 @@ const subnetReportSchema = new mongoose.Schema({
     positives:  [{ category: String, score: Number, detail: String }],
     concerns:   [{ category: String, score: Number, detail: String }],
     whatImpresses: String,
-    raiseTo9:   String,   // what would raise score to 9/10
+    raiseTo9: [String],  // what would raise score to 9/10
 
     // Section 3 — Sentiment & signals
     sentiment:        String,

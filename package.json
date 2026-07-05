@@ -1,0 +1,17 @@
+{
+  "name": "discord-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord scraper with AI analysis — root dev orchestrator",
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB -c blue,green \"npm --prefix backend run dev\" \"npm --prefix frontend start\"",
+    "dev:api": "npm --prefix backend run dev",
+    "dev:web": "npm --prefix frontend start",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix backend start",
+    "install:all": "npm install && npm --prefix backend install && npm --prefix frontend install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

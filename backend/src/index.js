@@ -43,6 +43,7 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/scraper', scraperRoutes);
 app.use("/api/subnets", require("./routes/subnet_routes"));
+app.use("/api", require("./routes/subnetConfig"));
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));

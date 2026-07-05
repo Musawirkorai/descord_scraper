@@ -10,6 +10,7 @@ function SubnetIntel() {
   const [schedule, setSchedule] = useState(null);
   const [loading, setLoading]   = useState(true);
   const [running, setRunning]   = useState(false);
+  const [pausing, setPausing]   = useState(false);
   const [err, setErr]           = useState("");
   const [selected, setSelected] = useState(null);       // detail view
   const [historySubnet, setHistSub] = useState(null);   // history for one subnet
@@ -42,6 +43,27 @@ function SubnetIntel() {
       setTimeout(load, 3000);
     } catch (e) { setErr(e.message); }
     setRunning(false);
+  };
+
+  const pauseAnalysis = async (days = null) => {
+    setPausing(true); setErr("");
+    try {
+      await api("/subnets/pause", {
+        method: "POST",
+        body: JSON.stringify(days ? { days } : {}),
+      });
+      await load();
+    } catch (e) { setErr(e.message); }
+    setPausing(false);
+  };
+
+  const resumeAnalysis = async () => {
+    setPausing(true); setErr("");
+    try {
+      await api("/subnets/resume", { method: "POST" });
+      await load();
+    } catch (e) { setErr(e.message); }
+    setPausing(false);
   };
 
   const loadHistory = async (subnetNumber) => {
@@ -452,6 +474,37 @@ function SubnetIntel() {
           ))}
         </div>
 
+        {/* Pause / Resume control */}
+        <Card style={{ padding: 20, border: sc.isPaused ? "1px solid rgba(245,158,11,.4)" : "1px solid var(--border)", background: sc.isPaused ? "rgba(245,158,11,.06)" : "var(--card)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+                {sc.isPaused ? "⏸️ Analysis Paused" : "▶️ Analysis Active"}
+              </div>
+              <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>
+                {sc.isPaused
+                  ? (sc.resumeAt
+                      ? `Held — auto-resumes on ${new Date(sc.resumeAt).toLocaleDateString()}. Rotation will continue from subnet ${sc.upcoming?.[0]?.subnetNumber ?? "?"}.`
+                      : `Held indefinitely. Rotation will continue from subnet ${sc.upcoming?.[0]?.subnetNumber ?? "?"} when you resume.`)
+                  : "Daily analysis runs automatically. Pause to hold the rotation without missing any reports — it resumes from where it stopped."}
+              </p>
+            </div>
+            {sc.isPaused ? (
+              <button onClick={() => resumeAnalysis()} disabled={pausing} style={{ padding: "10px 22px", background: "linear-gradient(135deg,#10b981,#059669)", color: "white", borderRadius: 9, fontSize: 14, fontWeight: 600, cursor: pausing ? "not-allowed" : "pointer", border: "none", opacity: pausing ? .5 : 1, fontFamily: "var(--font)", whiteSpace: "nowrap" }}>
+                {pausing ? "…" : "▶ Resume"}
+              </button>
+            ) : (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {[["Pause 3d", 3], ["Pause 7d", 7], ["Pause indefinitely", null]].map(([label, days]) => (
+                  <button key={label} onClick={() => pauseAnalysis(days)} disabled={pausing} style={{ padding: "10px 16px", background: "rgba(245,158,11,.12)", color: "#fbbf24", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: pausing ? "not-allowed" : "pointer", border: "1px solid rgba(245,158,11,.3)", opacity: pausing ? .5 : 1, fontFamily: "var(--font)", whiteSpace: "nowrap" }}>
+                    {pausing ? "…" : `⏸ ${label}`}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
+
         {/* Progress bar */}
         <Card style={{ padding: 20 }}>
           <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>Cycle {sc.schedule?.cycleNumber || 1} Progress</div>
@@ -481,9 +534,13 @@ function SubnetIntel() {
         {/* Manual trigger */}
         <Card style={{ padding: 20 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Run Now</div>
-          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>Manually trigger today's analysis without waiting for the 08:00 UTC schedule.</p>
-          <button onClick={() => runNow()} disabled={running} style={{ padding: "10px 24px", background: "linear-gradient(135deg,#3b82f6,#6366f1)", color: "white", borderRadius: 9, fontSize: 14, fontWeight: 600, cursor: running ? "not-allowed" : "pointer", border: "none", opacity: running ? .5 : 1, fontFamily: "var(--font)" }}>
-            {running ? "Running…" : "▶ Run Next 4 Subnets Now"}
+          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>
+            {sc.isPaused
+              ? "Analysis is paused — resume it above before triggering a rotation run."
+              : "Manually trigger today's analysis without waiting for the 08:00 UTC schedule."}
+          </p>
+          <button onClick={() => runNow()} disabled={running || sc.isPaused} style={{ padding: "10px 24px", background: "linear-gradient(135deg,#3b82f6,#6366f1)", color: "white", borderRadius: 9, fontSize: 14, fontWeight: 600, cursor: (running || sc.isPaused) ? "not-allowed" : "pointer", border: "none", opacity: (running || sc.isPaused) ? .5 : 1, fontFamily: "var(--font)" }}>
+            {running ? "Running…" : `▶ Run Next ${sc.subnetsPerDay || 3} Subnets Now`}
           </button>
         </Card>
       </div>
@@ -499,7 +556,7 @@ function SubnetIntel() {
       <div className="fu" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
         <div>
           <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>Subnet Intelligence</h2>
-          <p style={{ color: "var(--muted)", fontSize: 14 }}>Daily automated analysis · 4 subnets/day · 150-subnet rotation</p>
+          <p style={{ color: "var(--muted)", fontSize: 14 }}>Daily automated analysis · {schedule?.subnetsPerDay || 3} subnets/day · 150-subnet rotation</p>
         </div>
         <div style={{ display: "flex", gap: 3, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: 4 }}>
           {[["today","📋 Reports"],["leaderboard","🏆 Leaderboard"],["schedule","⏰ Schedule"]].map(([t,label]) => (

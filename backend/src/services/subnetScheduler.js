@@ -2,7 +2,7 @@
  * Subnet Intelligence Scheduler
  * ─────────────────────────────
  * Runs once per day at 08:00 UTC.
- * Picks the next 4 subnets in the rotation, scrapes + analyzes them,
+ * Picks the next 3 subnets in the rotation, scrapes + analyzes them,
  * stores reports in SubnetReport collection.
  * After all subnets complete one cycle, resets to index 0 (cycle 2 begins).
  */
@@ -15,7 +15,7 @@ const { analyzeSubnet } = require("./subnetIntelService");
 const { backfillChannel } = require("./scraperService");
 const logger = require("../utils/logger");
 
-const SUBNETS_PER_DAY = 4;
+const SUBNETS_PER_DAY = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sort channels by subnet number extracted from channel name
@@ -23,7 +23,8 @@ const SUBNETS_PER_DAY = 4;
 // ─────────────────────────────────────────────────────────────────────────────
 function extractSubnetNumber(channelName) {
   const match = channelName.match(/^(\d+)/);
-  return match ? parseInt(match[1]) : 9999;
+  const num = match ? parseInt(match[1]) : 9999;
+  return num === 0 ? 9999 : num; // ← treat 0 as invalid
 }
 
 async function getSortedSubnetChannels(serverId) {
@@ -32,21 +33,23 @@ async function getSortedSubnetChannels(serverId) {
     scrapeEnabled: true,
     type: "text",
   });
-
   return channels
-    .map(ch => ({
+    .map((ch) => ({
       ...ch.toObject(),
       subnetNumber: extractSubnetNumber(ch.name),
     }))
-    .filter(ch => ch.subnetNumber !== undefined)// only numbered subnet channels
+    .filter((ch) => ch.subnetNumber > 0 && ch.subnetNumber !== 9999)
     .sort((a, b) => a.subnetNumber - b.subnetNumber);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Get or create the schedule state
+// Pass resetToSubnet to force the rotation to start from a specific subnet number
+// e.g. resetToSubnet = 9 → scheduler starts from SN9 on next run
 // ─────────────────────────────────────────────────────────────────────────────
-async function getSchedule() {
+async function getSchedule(allSubnets = null, resetToSubnet = null) {
   let schedule = await SubnetSchedule.findOne();
+
   if (!schedule) {
     schedule = await SubnetSchedule.create({
       currentIndex: 0,
@@ -54,14 +57,91 @@ async function getSchedule() {
       subnetsPerDay: SUBNETS_PER_DAY,
     });
   }
+
+  // If a resetToSubnet is requested, point the rotation at that subnet number.
+  // If that exact subnet has no channel, fall through to the next available one.
+  if (resetToSubnet !== null && allSubnets) {
+    let targetIndex = allSubnets.findIndex(
+      (ch) => ch.subnetNumber === resetToSubnet
+    );
+    if (targetIndex === -1) {
+      targetIndex = allSubnets.findIndex((ch) => ch.subnetNumber >= resetToSubnet);
+    }
+    if (targetIndex !== -1) {
+      const resolved = allSubnets[targetIndex].subnetNumber;
+      await SubnetSchedule.findByIdAndUpdate(schedule._id, {
+        nextSubnetNumber: resolved,
+        currentIndex: targetIndex,
+      });
+      schedule.nextSubnetNumber = resolved;
+      schedule.currentIndex = targetIndex;
+      logger.info(`🔧 Schedule reset: next run starts from subnet ${resolved} (requested ${resetToSubnet}, index ${targetIndex})`);
+    } else {
+      logger.warn(`⚠️  No subnet >= ${resetToSubnet} found in channel list — ignoring reset`);
+    }
+  }
+
   return schedule;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pause helper — decides whether the automatic rotation should be held.
+// Auto-resumes (clears the pause) once resumeAt has passed. Returns true if the
+// run should be skipped. The rotation pointer is never touched, so resuming
+// continues from exactly where it stopped.
+// ─────────────────────────────────────────────────────────────────────────────
+async function isRotationPaused(schedule) {
+  if (!schedule?.isPaused) return false;
+
+  // Auto-resume if a resumeAt was set and that time has arrived.
+  if (schedule.resumeAt && new Date() >= new Date(schedule.resumeAt)) {
+    await SubnetSchedule.findByIdAndUpdate(schedule._id, {
+      isPaused: false,
+      pausedAt: null,
+      resumeAt: null,
+      pauseReason: null,
+    });
+    logger.info("▶️  Subnet analysis auto-resumed — scheduled hold has expired.");
+    return false;
+  }
+
+  const until = schedule.resumeAt
+    ? `until ${new Date(schedule.resumeAt).toISOString()}`
+    : "indefinitely (resume manually)";
+  logger.info(`⏸️  Subnet analysis is paused ${until} — skipping automatic run.`);
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN DAILY JOB
 // ─────────────────────────────────────────────────────────────────────────────
-async function runDailySubnetAnalysis(discordClient, serverId, manualSubnets = null) {
-  const schedule = await getSchedule();
+/**
+ * @param {object}   discordClient  - Discord.js client
+ * @param {string}   serverId       - Discord guild ID
+ * @param {number[]|null} manualSubnets - e.g. [9, 10, 11] to override rotation
+ * @param {number|null}   resetToSubnet - Force rotation to restart from this subnet number
+ */
+async function runDailySubnetAnalysis(
+  discordClient,
+  serverId,
+  manualSubnets = null,
+  resetToSubnet = null,
+) {
+  // Load all subnets first so getSchedule can resolve resetToSubnet index
+  const allSubnets = await getSortedSubnetChannels(serverId);
+  if (allSubnets.length === 0) {
+    logger.warn("No subnet channels found — make sure scrapeEnabled=true on subnet channels.");
+    return { processed: 0 };
+  }
+
+  const schedule = await getSchedule(allSubnets, resetToSubnet);
+
+  // Honor a pause/hold for automatic rotation runs only. Manual runs (explicit
+  // subnet list) are an intentional user action and bypass the pause.
+  const isAutomaticRun = !manualSubnets || manualSubnets.length === 0;
+  if (isAutomaticRun && (await isRotationPaused(schedule))) {
+    return { skipped: true, reason: "paused" };
+  }
 
   // Prevent double-run
   if (schedule.isRunning) {
@@ -69,35 +149,38 @@ async function runDailySubnetAnalysis(discordClient, serverId, manualSubnets = n
     return { skipped: true, reason: "already running" };
   }
 
-  await SubnetSchedule.findByIdAndUpdate(schedule._id, { isRunning: true, lastRunDate: new Date() });
+  await SubnetSchedule.findByIdAndUpdate(schedule._id, {
+    isRunning: true,
+    lastRunDate: new Date(),
+  });
 
   try {
-    const allSubnets = await getSortedSubnetChannels(serverId);
-    if (allSubnets.length === 0) {
-      logger.warn("No subnet channels found — make sure scrapeEnabled=true on subnet channels.");
-      return { processed: 0 };
-    }
-
     const total = allSubnets.length;
-    let startIndex = schedule.currentIndex % total;
     let cycleNumber = schedule.cycleNumber;
 
-    // If manual subnets provided (from UI), use those instead
-    const toProcess = manualSubnets
-      ? allSubnets.filter(ch => manualSubnets.includes(ch.subnetNumber))
-      : allSubnets.slice(startIndex, startIndex + SUBNETS_PER_DAY);
-
-    logger.info(`📊 Daily subnet analysis: processing ${toProcess.length} subnets (index ${startIndex}–${startIndex + toProcess.length - 1} of ${total})`);
+    // ── Resolve the start position by SUBNET NUMBER (robust against index drift) ──
+    // If nextSubnetNumber is set, start at the first subnet whose number is >= it.
+    // Otherwise fall back to the legacy stored index (fresh schedules).
+    let startIndex;
+    if (schedule.nextSubnetNumber != null) {
+      startIndex = allSubnets.findIndex(
+        (ch) => ch.subnetNumber >= schedule.nextSubnetNumber
+      );
+      if (startIndex === -1) startIndex = 0; // requested subnet past the end → wrap to start
+    } else {
+      startIndex = schedule.currentIndex % total;
+    }
 
     const results = [];
     const reportDate = new Date();
     reportDate.setHours(0, 0, 0, 0);
 
-    for (const ch of toProcess) {
+    // Backfill + analyze a single subnet. Returns "ok" | "no_data" | "failed".
+    async function processSubnet(ch) {
       try {
         logger.info(`  → Subnet ${ch.subnetNumber}: #${ch.name}`);
 
-        // First backfill last 7 days to make sure we have fresh data
+        // Backfill last 7 days of messages
         if (discordClient) {
           try {
             await backfillChannel(discordClient, ch.discordId, { limit: 500 });
@@ -106,16 +189,12 @@ async function runDailySubnetAnalysis(discordClient, serverId, manualSubnets = n
           }
         }
 
-        // Run the AI analysis
+        // Run AI analysis
         const report = await analyzeSubnet(ch.discordId, ch.name, ch.subnetNumber, 7);
 
         if (report) {
-          // Save report — upsert so re-running same day updates it
           await SubnetReport.findOneAndUpdate(
-            {
-              channelId: ch.discordId,
-              reportDate,
-            },
+            { channelId: ch.discordId, reportDate },
             {
               subnetNumber: ch.subnetNumber,
               channelId:    ch.discordId,
@@ -126,51 +205,108 @@ async function runDailySubnetAnalysis(discordClient, serverId, manualSubnets = n
               dayInCycle:   Math.floor(startIndex / SUBNETS_PER_DAY) + 1,
               status:       "completed",
             },
-            { upsert: true, new: true }
+            { upsert: true, new: true },
           );
 
-          results.push({ subnetNumber: ch.subnetNumber, name: ch.name, status: "ok" });
           logger.info(`  ✅ Subnet ${ch.subnetNumber} complete — score: ${report.investabilityScore}/10`);
-        } else {
-          results.push({ subnetNumber: ch.subnetNumber, name: ch.name, status: "no_data" });
+          return { subnetNumber: ch.subnetNumber, name: ch.name, status: "ok" };
         }
 
-        // Rate limit — wait 3s between subnets
-        await new Promise(r => setTimeout(r, 3000));
+        // No report → empty / not enough messages. Skipped, doesn't count.
+        logger.info(`  ⏭️  Subnet ${ch.subnetNumber} skipped (no data) — trying next`);
+        return { subnetNumber: ch.subnetNumber, name: ch.name, status: "no_data" };
 
       } catch (err) {
         logger.error(`  ❌ Subnet ${ch.subnetNumber} failed: ${err.message}`);
-        results.push({ subnetNumber: ch.subnetNumber, name: ch.name, status: "failed", error: err.message });
-
         await SubnetReport.findOneAndUpdate(
           { channelId: ch.discordId, reportDate },
-          { subnetNumber: ch.subnetNumber, channelId: ch.discordId, channelName: ch.name, reportDate, status: "failed", error: err.message, cycleNumber },
-          { upsert: true }
+          {
+            subnetNumber: ch.subnetNumber,
+            channelId:    ch.discordId,
+            channelName:  ch.name,
+            reportDate,
+            status:       "failed",
+            error:        err.message,
+            cycleNumber,
+          },
+          { upsert: true },
         );
+        return { subnetNumber: ch.subnetNumber, name: ch.name, status: "failed", error: err.message };
       }
     }
 
-    // Advance the schedule index
-    if (!manualSubnets) {
-      let nextIndex = startIndex + SUBNETS_PER_DAY;
-      let nextCycle = cycleNumber;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-      if (nextIndex >= total) {
-        nextIndex = 0;
-        nextCycle += 1;
-        logger.info(`🔄 Completed full cycle ${cycleNumber} of ${total} subnets. Starting cycle ${nextCycle}.`);
+    // ── MANUAL run — process exactly the requested subnets, no skipping ────────
+    if (manualSubnets && manualSubnets.length > 0) {
+      const toProcess = manualSubnets
+        .map((sn) => allSubnets.find((ch) => ch.subnetNumber === sn))
+        .filter(Boolean);
+
+      if (toProcess.length === 0) {
+        logger.warn(`⚠️  None of the requested subnets [${manualSubnets}] were found in the channel list.`);
+        await SubnetSchedule.findByIdAndUpdate(schedule._id, { isRunning: false });
+        return { processed: 0 };
       }
 
-      await SubnetSchedule.findByIdAndUpdate(schedule._id, {
-        currentIndex: nextIndex,
-        cycleNumber:  nextCycle,
-        isRunning:    false,
-      });
-    } else {
+      logger.info(`🎯 Manual subnet run: [${toProcess.map((ch) => ch.subnetNumber).join(", ")}]`);
+
+      for (let i = 0; i < toProcess.length; i++) {
+        results.push(await processSubnet(toProcess[i]));
+        if (i < toProcess.length - 1) await sleep(3000);
+      }
+
+      // Manual run — don't touch the rotation pointer
       await SubnetSchedule.findByIdAndUpdate(schedule._id, { isRunning: false });
+
+      logger.info(`📊 Run complete: ${results.filter((r) => r.status === "ok").length}/${toProcess.length} succeeded`);
+      return { processed: results.length, results };
     }
 
-    logger.info(`📊 Daily subnet run complete: ${results.filter(r => r.status === "ok").length}/${toProcess.length} succeeded`);
+    // ── SCHEDULED rotation — keep going until SUBNETS_PER_DAY *succeed*, ───────
+    //    skipping empty / failed subnets. Examine at most one full pass.
+    logger.info(
+      `📊 Daily subnet analysis: aiming for ${SUBNETS_PER_DAY} report(s), starting at subnet ${allSubnets[startIndex].subnetNumber}`
+    );
+
+    let successCount = 0;
+    let examined = 0;
+    let idx = startIndex;
+    let lastExaminedIndex = startIndex;
+
+    while (successCount < SUBNETS_PER_DAY && examined < total) {
+      const ch = allSubnets[idx];
+      const r = await processSubnet(ch);
+      results.push(r);
+      if (r.status === "ok") successCount++;
+
+      lastExaminedIndex = idx;
+      examined++;
+      idx = (idx + 1) % total; // wrap so a run near the end can still find 3
+
+      if (successCount < SUBNETS_PER_DAY && examined < total) await sleep(3000);
+    }
+
+    // ── Advance pointer to the subnet AFTER the last one we examined ──────────
+    let nextCycle = cycleNumber;
+    let nextIndex = lastExaminedIndex + 1;
+    if (nextIndex >= total) {
+      nextIndex = 0;
+      nextCycle += 1;
+      logger.info(`🔄 Completed full cycle ${cycleNumber} of ${total} subnets. Starting cycle ${nextCycle}.`);
+    }
+    const nextSubnetNumber = allSubnets[nextIndex].subnetNumber;
+
+    await SubnetSchedule.findByIdAndUpdate(schedule._id, {
+      nextSubnetNumber,
+      currentIndex: nextIndex,
+      cycleNumber:  nextCycle,
+      isRunning:    false,
+    });
+
+    logger.info(
+      `📊 Run complete: ${successCount}/${SUBNETS_PER_DAY} reports (examined ${examined} subnet(s)). Next run starts at subnet ${nextSubnetNumber}.`
+    );
     return { processed: results.length, results };
 
   } catch (err) {
@@ -181,7 +317,38 @@ async function runDailySubnetAnalysis(discordClient, serverId, manualSubnets = n
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CRON — runs every day at 08:00 UTC
+// Startup catch-up: if today's batch hasn't run yet (server was down at midnight,
+// just rebooted, or first launch), run it once shortly after boot so a day is
+// never missed. Guarded by lastRunDate so restarts during the day don't re-run.
+// Disable with SUBNET_RUN_ON_STARTUP=false.
+// ─────────────────────────────────────────────────────────────────────────────
+async function runCatchUpIfNeeded(discordClient, serverId) {
+  try {
+    const schedule = await SubnetSchedule.findOne();
+    const now = new Date();
+    const lastRun = schedule?.lastRunDate ? new Date(schedule.lastRunDate) : null;
+    const ranToday =
+      lastRun &&
+      lastRun.getFullYear() === now.getFullYear() &&
+      lastRun.getMonth() === now.getMonth() &&
+      lastRun.getDate() === now.getDate();
+
+    if (ranToday) {
+      logger.info("✅ Subnet analysis already ran today — skipping startup catch-up.");
+      return;
+    }
+
+    logger.info("⏳ No subnet analysis yet today — running startup catch-up...");
+    await runDailySubnetAnalysis(discordClient, serverId);
+  } catch (err) {
+    logger.error("Startup catch-up failed:", err.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRON — runs every day at midnight (00:00) so fresh reports are ready for the
+// new day. Timezone defaults to UTC; set SUBNET_SCHEDULE_TZ (e.g. "Asia/Karachi")
+// in .env to run at your own local midnight.
 // ─────────────────────────────────────────────────────────────────────────────
 function startScheduler(discordClient, serverId) {
   if (!serverId) {
@@ -189,16 +356,31 @@ function startScheduler(discordClient, serverId) {
     return;
   }
 
-  logger.info("⏰ Subnet scheduler started — runs daily at 08:00 UTC");
+  const timezone = process.env.SUBNET_SCHEDULE_TZ || "UTC";
+  logger.info(`⏰ Subnet scheduler started — runs daily at 00:00 ${timezone}`);
 
-  cron.schedule("0 8 * * *", async () => {
-    logger.info("⏰ Scheduled subnet analysis triggered");
-    try {
-      await runDailySubnetAnalysis(discordClient, serverId);
-    } catch (err) {
-      logger.error("Scheduled run failed:", err.message);
-    }
-  }, { timezone: "UTC" });
+  cron.schedule(
+    "0 0 * * *",
+    async () => {
+      logger.info("⏰ Scheduled subnet analysis triggered");
+      try {
+        await runDailySubnetAnalysis(discordClient, serverId);
+      } catch (err) {
+        logger.error("Scheduled run failed:", err.message);
+      }
+    },
+    { timezone },
+  );
+
+  // Run today's batch on startup if it hasn't happened yet (unless disabled).
+  if (process.env.SUBNET_RUN_ON_STARTUP !== "false") {
+    setTimeout(() => runCatchUpIfNeeded(discordClient, serverId), 15000);
+  }
 }
 
-module.exports = { startScheduler, runDailySubnetAnalysis, getSortedSubnetChannels };
+module.exports = {
+  startScheduler,
+  runDailySubnetAnalysis,
+  getSortedSubnetChannels,
+  SUBNETS_PER_DAY,
+};

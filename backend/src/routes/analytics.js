@@ -1,55 +1,83 @@
-const router = require('express').Router();
-const { requireAuth } = require('../middleware/auth');
-const { generateDailySummary, analyzeTrends, analyzeSentiment, customAnalysis, analyzeMultipleChannels } = require('../services/aiService');
-const AiResult = require('../models/AiResult');
+const router = require("express").Router();
+const { requireAuth } = require("../middleware/auth");
+const {
+  generateDailySummary,
+  analyzeTrends,
+  analyzeSentiment,
+  customAnalysis,
+  analyzeMultipleChannels,
+} = require("../services/aiService");
+const AiResult = require("../models/AiResult");
 
 // POST /api/analytics/summary
-router.post('/summary', requireAuth, async (req, res) => {
+router.post("/summary", requireAuth, async (req, res) => {
   try {
     const { scope, targetId, targetName, date } = req.body;
-    const result = await generateDailySummary(scope, targetId, targetName, date ? new Date(date) : new Date());
+    const result = await generateDailySummary(
+      scope,
+      targetId,
+      targetName,
+      date ? new Date(date) : new Date(),
+    );
     res.json(result);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/analytics/trends
-router.post('/trends', requireAuth, async (req, res) => {
+router.post("/trends", requireAuth, async (req, res) => {
   try {
     const { scope, targetId, targetName, days } = req.body;
     const result = await analyzeTrends(scope, targetId, targetName, days || 7);
     res.json(result);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/analytics/sentiment
-router.post('/sentiment', requireAuth, async (req, res) => {
+router.post("/sentiment", requireAuth, async (req, res) => {
   try {
     const { scope, targetId, from, to } = req.body;
-    const result = await analyzeSentiment(scope, targetId, new Date(from), new Date(to));
+    const result = await analyzeSentiment(
+      scope,
+      targetId,
+      new Date(from),
+      new Date(to),
+    );
     res.json(result);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/analytics/ask
-router.post('/ask', requireAuth, async (req, res) => {
+router.post("/ask", requireAuth, async (req, res) => {
   try {
     const { scope, targetId, question, days } = req.body;
     const result = await customAnalysis(scope, targetId, question, days || 7);
     res.json(result);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/analytics/history?scope&targetId&type
-router.get('/history', requireAuth, async (req, res) => {
+router.get("/history", requireAuth, async (req, res) => {
   try {
     const { scope, targetId, type, limit = 20 } = req.query;
     const filter = {};
     if (scope) filter.scope = scope;
     if (targetId) filter.targetId = targetId;
     if (type) filter.type = type;
-    const results = await AiResult.find(filter).sort({ generatedAt: -1 }).limit(parseInt(limit));
+    const results = await AiResult.find(filter)
+      .sort({ generatedAt: -1 })
+      .limit(parseInt(limit));
     res.json(results);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Added this route to analytics.js (after the existing /ask route, before module.exports)
@@ -58,16 +86,26 @@ router.get('/history', requireAuth, async (req, res) => {
 
 // POST /api/analytics/multi
 // Body: { targets: [{ scope, targetId, targetName }], analysisType: 'summary'|'trends'|'ask', days: number, question: string }
-router.post('/multi', requireAuth, async (req, res) => {
+router.post("/multi", requireAuth, async (req, res) => {
   try {
-    const { targets, analysisType = 'summary', days = 7, question = '' } = req.body;
+    const {
+      targets,
+      analysisType = "summary",
+      days = 7,
+      question = "",
+    } = req.body;
     if (!targets || !Array.isArray(targets) || targets.length === 0) {
-      return res.status(400).json({ error: 'targets array is required' });
+      return res.status(400).json({ error: "targets array is required" });
     }
     if (targets.length > 20) {
-      return res.status(400).json({ error: 'Maximum 20 channels per request' });
+      return res.status(400).json({ error: "Maximum 20 channels per request" });
     }
-    const result = await analyzeMultipleChannels(targets, analysisType, days, question);
+    const result = await analyzeMultipleChannels(
+      targets,
+      analysisType,
+      days,
+      question,
+    );
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -104,22 +142,27 @@ router.get("/history/timeline", requireAuth, async (req, res) => {
       .sort((a, b) => b[0].localeCompare(a[0]))
       .map(([month, items]) => ({
         month,
-        label: new Date(month + "-01").toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+        label: new Date(month + "-01").toLocaleDateString("en-US", {
+          month: "long",
+          year: "numeric",
+        }),
         count: items.length,
-        items: items.map(r => ({
+        items: items.map((r) => ({
           _id: r._id,
           type: r.type,
           targetName: r.targetName,
           generatedAt: r.generatedAt,
           sentiment: r.result?.sentiment || r.result?.overallSentiment || null,
           keyTopics: r.result?.keyTopics || [],
-          trendingTopics: (r.result?.trendingTopics || []).map(t => t.topic || t),
+          trendingTopics: (r.result?.trendingTopics || []).map(
+            (t) => t.topic || t,
+          ),
           emergingSignals: r.result?.emergingSignals || [],
           highlights: r.result?.highlights || [],
           summary: r.result?.summary || null,
           messageCount: r.result?.messageCount || 0,
           channels: r.result?.channels || [],
-        }))
+        })),
       }));
 
     res.json(timeline);
@@ -137,9 +180,7 @@ router.get("/history/topics", requireAuth, async (req, res) => {
     if (scope) filter.scope = scope;
     if (targetId) filter.targetId = targetId;
 
-    const results = await AiResult.find(filter)
-      .sort({ generatedAt: 1 })
-      .lean();
+    const results = await AiResult.find(filter).sort({ generatedAt: 1 }).lean();
 
     // Build topic frequency map over time
     const topicMap = {}; // topic -> [{ month, count }]
@@ -148,7 +189,7 @@ router.get("/history/topics", requireAuth, async (req, res) => {
       const month = new Date(r.generatedAt).toISOString().substring(0, 7);
       const topics = [
         ...(r.result?.keyTopics || []),
-        ...(r.result?.trendingTopics || []).map(t => t.topic || t),
+        ...(r.result?.trendingTopics || []).map((t) => t.topic || t),
         ...(r.result?.crossChannelThemes || []),
       ].filter(Boolean);
 
@@ -161,7 +202,7 @@ router.get("/history/topics", requireAuth, async (req, res) => {
 
     // Convert to array sorted by total frequency
     const topics = Object.values(topicMap)
-      .map(t => ({
+      .map((t) => ({
         label: t.label,
         totalCount: Object.values(t.months).reduce((a, b) => a + b, 0),
         monthlyData: Object.entries(t.months)
@@ -176,5 +217,39 @@ router.get("/history/topics", requireAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+const multer = require("multer");
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+// POST /api/analytics/analyze-file
+router.post(
+  "/analyze-file",
+  requireAuth,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+      const fileContent = req.file.buffer.toString("utf-8");
+      const targetName = req.body.targetName || req.file.originalname;
+
+      const analysisResult = await analyzeTextFile(fileContent, targetName);
+
+      // Wrap in the same shape your SubnetReport model uses
+      // so ReportModal's  `const rpt = r.report || {}`  works correctly
+      res.json({
+        subnetNumber: req.body.subnetNumber || "?",
+        channelName: targetName,
+        reportDate: new Date(),
+        generatedAt: new Date(),
+        report: analysisResult, // ← ReportModal reads r.report
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
 
 module.exports = router;

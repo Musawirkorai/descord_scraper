@@ -3,33 +3,49 @@ const { requireAuth, requireAdmin } = require("../middleware/auth");
 const SubnetReport = require("../models/SubnetReport");
 const SubnetSchedule = require("../models/SubnetSchedule");
 const Channel = require("../models/Channel");
-const { runDailySubnetAnalysis, getSortedSubnetChannels } = require("../services/subnetScheduler");
+const {
+  runDailySubnetAnalysis,
+  getSortedSubnetChannels,
+  SUBNETS_PER_DAY,
+} = require("../services/subnetScheduler");
 const { answerSubnetQuestion } = require("../services/subnetIntelService");
 
 // GET /api/subnets/today
-// Returns the 4 most recently generated reports (today's batch)
+// Returns the latest batch keyed by reportDate — BOTH successful reports and
+// any that failed (e.g. rate limit / error), so the UI can surface subnets whose
+// report couldn't be produced instead of silently dropping them.
 router.get("/today", requireAuth, async (req, res) => {
   try {
-    // Get start of today
+    // Determine the batch day: today if anything ran today, otherwise the most
+    // recent day that produced any report.
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    // Try today's reports first
-    let reports = await SubnetReport.find({
-      status: "completed",
-      generatedAt: { $gte: todayStart },
-    })
-      .sort({ generatedAt: -1 })
-      .limit(4)
-      .lean();
-
-    // If none today, fall back to last 4 generated ever
-    if (reports.length === 0) {
-      reports = await SubnetReport.find({ status: "completed" })
-        .sort({ generatedAt: -1 })
-        .limit(4)
+    let batchStart = todayStart;
+    const hasToday = await SubnetReport.exists({
+      reportDate: { $gte: todayStart },
+    });
+    if (!hasToday) {
+      const latest = await SubnetReport.findOne()
+        .sort({ reportDate: -1 })
+        .select("reportDate")
         .lean();
+      if (latest?.reportDate) {
+        batchStart = new Date(latest.reportDate);
+        batchStart.setHours(0, 0, 0, 0);
+      }
     }
+    const batchEnd = new Date(batchStart);
+    batchEnd.setHours(23, 59, 59, 999);
+
+    // Completed first (sorted by subnet), then failed ones after — each subnet
+    // has at most one doc per day (upsert keyed on channelId + reportDate).
+    const reports = await SubnetReport.find({
+      reportDate: { $gte: batchStart, $lte: batchEnd },
+      status: { $in: ["completed", "failed"] },
+    })
+      .sort({ status: 1, subnetNumber: 1 }) // "completed" < "failed" alphabetically
+      .lean();
 
     res.json(reports);
   } catch (err) {
@@ -61,7 +77,9 @@ router.get("/reports/:subnetNumber", requireAuth, async (req, res) => {
     const reports = await SubnetReport.find({
       subnetNumber: parseInt(req.params.subnetNumber),
       status: "completed",
-    }).sort({ reportDate: -1 }).limit(20);
+    })
+      .sort({ reportDate: -1 })
+      .limit(20);
     res.json(reports);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -79,11 +97,17 @@ router.get("/leaderboard", requireAuth, async (req, res) => {
       { $sort: { "report.investabilityScore": -1 } },
       {
         $project: {
-          subnetNumber: 1, channelName: 1, reportDate: 1,
-          "report.subnetName": 1, "report.investabilityScore": 1,
-          "report.scoreLabel": 1, "report.investabilityBreakdown": 1,
-          "report.overallSentiment": 1, "report.oneLiner": 1,
-          "report.briefDescription": 1, "report.messageCount": 1,
+          subnetNumber: 1,
+          channelName: 1,
+          reportDate: 1,
+          "report.subnetName": 1,
+          "report.investabilityScore": 1,
+          "report.scoreLabel": 1,
+          "report.investabilityBreakdown": 1,
+          "report.overallSentiment": 1,
+          "report.oneLiner": 1,
+          "report.briefDescription": 1,
+          "report.messageCount": 1,
           "report.bottomLine": 1,
         },
       },
@@ -95,24 +119,123 @@ router.get("/leaderboard", requireAuth, async (req, res) => {
 });
 
 // GET /api/subnets/schedule
+// GET /api/subnets/schedule
 router.get("/schedule", requireAuth, async (req, res) => {
   try {
-    const schedule = await SubnetSchedule.findOne();
     const serverId = process.env.DISCORD_GUILD_ID;
-    if (!serverId) return res.json({ schedule, channels: [] });
+    const schedule = await SubnetSchedule.findOne();
 
-    const channels = await getSortedSubnetChannels(serverId);
-    const total = channels.length;
-    const idx = schedule ? schedule.currentIndex % Math.max(total, 1) : 0;
-    const upcoming = channels.slice(idx, idx + 4).map(c => ({
-      subnetNumber: c.subnetNumber, name: c.name,
-    }));
+    // ── Get REAL channel count dynamically
+    const { getSortedSubnetChannels } = require("../services/subnetScheduler");
+    const allSubnets = await getSortedSubnetChannels(serverId);
+    const total = allSubnets.length;
+
+    if (!schedule) {
+      return res.json({
+        currentIndex: 0,
+        total,
+        progressPercent: 0,
+        subnetsPerDay: SUBNETS_PER_DAY,
+        schedule: { cycleNumber: 1 },
+        upcoming: allSubnets.slice(0, SUBNETS_PER_DAY).map((ch) => ({
+          subnetNumber: ch.subnetNumber,
+          name: ch.name,
+        })),
+      });
+    }
+    const currentIndex = schedule.currentIndex % total;
+    const progressPercent =
+      total > 0 ? Math.round((currentIndex / total) * 100) : 0;
+
+    // Next SUBNETS_PER_DAY in rotation (the subnets the next run will target)
+    const upcoming = allSubnets
+      .slice(currentIndex, currentIndex + SUBNETS_PER_DAY)
+      .map((ch) => ({ subnetNumber: ch.subnetNumber, name: ch.name }));
 
     res.json({
-      schedule, total,
-      currentIndex: idx,
-      progressPercent: total > 0 ? Math.round((idx / total) * 100) : 0,
+      currentIndex,
+      total, // ← always real count from DB
+      progressPercent,
+      subnetsPerDay: SUBNETS_PER_DAY,
+      schedule: {
+        cycleNumber: schedule.cycleNumber,
+      },
+      isRunning: schedule.isRunning,
+      lastRunDate: schedule.lastRunDate,
+      isPaused: schedule.isPaused,
+      pausedAt: schedule.pausedAt,
+      resumeAt: schedule.resumeAt,
+      pauseReason: schedule.pauseReason,
       upcoming,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/subnets/pause — hold the automatic daily rotation.
+// Body: { days?: number, reason?: string }
+//   days   → auto-resume after N days (omit for an indefinite hold)
+//   reason → optional note shown in the schedule status
+// The rotation pointer is left untouched, so resuming continues from where it
+// stopped. Manual runs still work while paused.
+router.post("/pause", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { days, reason } = req.body || {};
+
+    let resumeAt = null;
+    if (days != null) {
+      const n = Number(days);
+      if (!Number.isFinite(n) || n <= 0) {
+        return res.status(400).json({ error: "days must be a positive number" });
+      }
+      resumeAt = new Date(Date.now() + n * 24 * 60 * 60 * 1000);
+    }
+
+    const schedule = await SubnetSchedule.findOneAndUpdate(
+      {},
+      {
+        isPaused: true,
+        pausedAt: new Date(),
+        resumeAt,
+        pauseReason: reason || null,
+      },
+      { upsert: true, new: true },
+    );
+
+    res.json({
+      message: resumeAt
+        ? `Analysis paused — will auto-resume on ${resumeAt.toISOString()}`
+        : "Analysis paused indefinitely — resume manually when ready",
+      isPaused: schedule.isPaused,
+      pausedAt: schedule.pausedAt,
+      resumeAt: schedule.resumeAt,
+      pauseReason: schedule.pauseReason,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/subnets/resume — lift the pause and continue the rotation from
+// where it stopped on the next scheduled (or manual) run.
+router.post("/resume", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const schedule = await SubnetSchedule.findOneAndUpdate(
+      {},
+      {
+        isPaused: false,
+        pausedAt: null,
+        resumeAt: null,
+        pauseReason: null,
+      },
+      { upsert: true, new: true },
+    );
+
+    res.json({
+      message: "Analysis resumed — the next run continues from where it stopped",
+      isPaused: schedule.isPaused,
+      nextSubnetNumber: schedule.nextSubnetNumber,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -124,13 +247,20 @@ router.post("/run", requireAuth, requireAdmin, async (req, res) => {
   try {
     const { subnetNumbers } = req.body;
     const serverId = process.env.DISCORD_GUILD_ID;
-    if (!serverId) return res.status(400).json({ error: "DISCORD_GUILD_ID not set" });
+    if (!serverId)
+      return res.status(400).json({ error: "DISCORD_GUILD_ID not set" });
 
-    res.json({ message: "Analysis started", subnetNumbers: subnetNumbers || "next 4 in rotation" });
+    res.json({
+      message: "Analysis started",
+      subnetNumbers: subnetNumbers || "next 3 in rotation",
+    });
 
     const discordClient = require("../bot/index");
-    runDailySubnetAnalysis(discordClient, serverId, subnetNumbers || null)
-      .catch(e => console.error("Run failed:", e.message));
+    runDailySubnetAnalysis(
+      discordClient,
+      serverId,
+      subnetNumbers || null,
+    ).catch((e) => console.error("Run failed:", e.message));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -140,23 +270,33 @@ router.post("/run", requireAuth, requireAdmin, async (req, res) => {
 router.post("/chat/:subnetNumber", requireAuth, async (req, res) => {
   try {
     const { question, days = 30 } = req.body;
-    if (!question) return res.status(400).json({ error: "question is required" });
+    if (!question)
+      return res.status(400).json({ error: "question is required" });
 
     const subnetNumber = parseInt(req.params.subnetNumber);
 
     // Find the channel for this subnet
     const serverId = process.env.DISCORD_GUILD_ID;
     const channels = await getSortedSubnetChannels(serverId);
-    const channel = channels.find(c => c.subnetNumber === subnetNumber);
-    if (!channel) return res.status(404).json({ error: `No channel found for subnet ${subnetNumber}` });
+    const channel = channels.find((c) => c.subnetNumber === subnetNumber);
+    if (!channel)
+      return res
+        .status(404)
+        .json({ error: `No channel found for subnet ${subnetNumber}` });
 
     // Get latest report for subnet name context
     const latestReport = await SubnetReport.findOne({
-      subnetNumber, status: "completed"
+      subnetNumber,
+      status: "completed",
     }).sort({ generatedAt: -1 });
     const subnetName = latestReport?.report?.subnetName || channel.name;
 
-    const result = await answerSubnetQuestion(channel.discordId, subnetName, question, days);
+    const result = await answerSubnetQuestion(
+      channel.discordId,
+      subnetName,
+      question,
+      days,
+    );
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -172,31 +312,33 @@ router.get("/reset-lock", requireAuth, async (req, res) => {
 // GET /api/subnets/system-status — permanent debug/health check
 router.get("/system-status", requireAuth, requireAdmin, async (req, res) => {
   try {
-    const Channel  = require("../models/Channel");
-    const Message  = require("../models/Message");
+    const Channel = require("../models/Channel");
+    const Message = require("../models/Message");
     const schedule = await SubnetSchedule.findOne();
 
     const channels = await Channel.find().sort({ name: 1 });
     const channelStats = await Promise.all(
-      channels.map(async ch => ({
-        name:          ch.name,
-        discordId:     ch.discordId,
+      channels.map(async (ch) => ({
+        name: ch.name,
+        discordId: ch.discordId,
         scrapeEnabled: ch.scrapeEnabled,
-        messageCount:  await Message.countDocuments({ channelId: ch.discordId }),
-      }))
+        messageCount: await Message.countDocuments({ channelId: ch.discordId }),
+      })),
     );
 
     const recentReports = await SubnetReport.find({ status: "completed" })
       .sort({ generatedAt: -1 })
       .limit(10)
-      .select("subnetNumber channelName status generatedAt report.investabilityScore");
+      .select(
+        "subnetNumber channelName status generatedAt report.investabilityScore",
+      );
 
     res.json({
       schedule: {
-        isRunning:    schedule?.isRunning,
+        isRunning: schedule?.isRunning,
         currentIndex: schedule?.currentIndex,
-        cycleNumber:  schedule?.cycleNumber,
-        lastRunDate:  schedule?.lastRunDate,
+        cycleNumber: schedule?.cycleNumber,
+        lastRunDate: schedule?.lastRunDate,
       },
       channels: channelStats,
       recentReports,
@@ -212,7 +354,7 @@ router.post("/reset-lock", requireAuth, requireAdmin, async (req, res) => {
     await SubnetSchedule.findOneAndUpdate(
       {},
       { isRunning: false },
-      { upsert: true }
+      { upsert: true },
     );
     res.json({ message: "Lock released successfully" });
   } catch (err) {

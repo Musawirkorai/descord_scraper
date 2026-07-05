@@ -13,7 +13,12 @@ import {
   Pie,
   Cell,
 } from "recharts";
-import {  useRef } from "react";
+import { useRef } from "react";
+import {
+  SUBNET_META,
+  getSubnetMeta,
+  extractCleanName,
+} from "./utils/subnetMeta_clean";
 
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -177,6 +182,128 @@ const ErrBox = ({ msg }) => (
     ⚠ {msg}
   </div>
 );
+
+// ── Lightweight markdown renderer for AI answers ──────────────────────────────
+// Handles bold (**x**), inline `code`, headings (#), and bullet / numbered lists
+// so AI responses read cleanly instead of showing raw markdown. No dependencies.
+function renderInline(text, keyBase = "") {
+  const nodes = [];
+  const regex = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  let last = 0;
+  let m;
+  let k = 0;
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    const tok = m[0];
+    if (tok.startsWith("**")) {
+      nodes.push(
+        <strong key={`${keyBase}b${k++}`} style={{ color: "#e2e8f0", fontWeight: 600 }}>
+          {tok.slice(2, -2)}
+        </strong>,
+      );
+    } else {
+      nodes.push(
+        <code
+          key={`${keyBase}c${k++}`}
+          style={{
+            fontFamily: "var(--mono)",
+            fontSize: 12,
+            background: "rgba(255,255,255,.06)",
+            padding: "1px 5px",
+            borderRadius: 4,
+          }}
+        >
+          {tok.slice(1, -1)}
+        </code>,
+      );
+    }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+function RichText({ text, style = {} }) {
+  const lines = String(text || "").split("\n");
+  const blocks = [];
+  let list = null;
+  const flush = () => {
+    if (list) {
+      blocks.push(list);
+      list = null;
+    }
+  };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      flush();
+      continue;
+    }
+    const bullet = line.match(/^[-*•]\s+(.*)/);
+    const numbered = line.match(/^\d+[.)]\s+(.*)/);
+    const heading = line.match(/^#{1,3}\s+(.*)/);
+    if (bullet) {
+      if (!list || list.type !== "ul") {
+        flush();
+        list = { type: "ul", items: [] };
+      }
+      list.items.push(bullet[1]);
+    } else if (numbered) {
+      if (!list || list.type !== "ol") {
+        flush();
+        list = { type: "ol", items: [] };
+      }
+      list.items.push(numbered[1]);
+    } else if (heading) {
+      flush();
+      blocks.push({ type: "h", text: heading[1] });
+    } else {
+      flush();
+      blocks.push({ type: "p", text: line });
+    }
+  }
+  flush();
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, ...style }}>
+      {blocks.map((b, i) => {
+        if (b.type === "h")
+          return (
+            <div
+              key={i}
+              style={{ fontWeight: 600, color: "#e2e8f0", fontSize: 13.5, marginTop: i ? 4 : 0 }}
+            >
+              {renderInline(b.text, `h${i}`)}
+            </div>
+          );
+        if (b.type === "p")
+          return <div key={i}>{renderInline(b.text, `p${i}`)}</div>;
+        const isOl = b.type === "ol";
+        return (
+          <div key={i} style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            {b.items.map((it, j) => (
+              <div key={j} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <span
+                  style={{
+                    color: "var(--accent2)",
+                    flexShrink: 0,
+                    fontWeight: 600,
+                    fontSize: isOl ? 12 : 15,
+                    lineHeight: 1.6,
+                    minWidth: isOl ? 16 : 8,
+                  }}
+                >
+                  {isOl ? `${j + 1}.` : "•"}
+                </span>
+                <span style={{ flex: 1 }}>{renderInline(it, `l${i}_${j}`)}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 const Tip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
@@ -376,13 +503,11 @@ function Login({ onLogin }) {
 // ── SIDEBAR ──────────────────────────────────────────────────────────────────
 // AFTER
 const NAV = [
-  { id:"subnets", icon:"⬡", label:"Subnet Intel" },
-  { id: "overview", icon: "▦", label: "Overview" },
+  { id: "subnets", icon: "⬡", label: "Subnet Intel" },
   { id: "servers", icon: "◈", label: "Servers" },
   { id: "analytics", icon: "◆", label: "AI Insights" },
-  { id: "scraper", icon: "◎", label: "Scraper Jobs" },
-  { id: "settings", icon: "◐", label: "Settings" },
-  { id:"history", icon:"◷", label:"History" },
+  { id: "settings", icon: "◐", label: "Subnet Settings" },   // ← uncommented
+  { id: "history", icon: "◷", label: "History" },
 ];
 
 function Sidebar({ active, onNav, user, onLogout }) {
@@ -556,57 +681,585 @@ function Sidebar({ active, onNav, user, onLogout }) {
   );
 }
 
+
+
+
+
+
+// import { useState, useEffect } from "react";
+
+// Deterministically map a category name → a Badge color so the same category
+// always renders in the same accent everywhere.
+const CAT_COLORS = ["blue", "green", "purple", "amber", "cyan", "indigo", "red"];
+// The only categories the app recognises — used for filters and the editor dropdown.
+const SUBNET_CATEGORIES = ["Portfolio", "Contender", "Others", "Not Eligible"];
+// Fixed accents for the standard categories; custom categories fall back to a hash.
+const CAT_FIXED = {
+  Portfolio: "green",
+  Contender: "blue",
+  Others: "gray",
+  "Not Eligible": "red",
+  Normal: "gray",
+};
+function catColor(name) {
+  if (!name) return "gray";
+  if (CAT_FIXED[name]) return CAT_FIXED[name];
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return CAT_COLORS[h % CAT_COLORS.length];
+}
+
+const SubnetSettings = () => {
+  const [configs, setConfigs] = useState([]);
+  const [editing, setEditing] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState({}); // subnetNumber -> bool
+  const [saved, setSaved] = useState({}); // subnetNumber -> bool (recently saved)
+  const [seeding, setSeeding] = useState(false);
+  const [search, setSearch] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
+
+  useEffect(() => {
+    fetchAll();
+  }, []);
+
+  const fetchAll = async () => {
+    setLoading(true);
+    setErr("");
+    try {
+      const c = await api("/subnet-config");
+      setConfigs(c);
+    } catch (e) {
+      setErr(e.message || "Failed to load subnet settings");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateField = (subnetNumber, field, value) => {
+    const meta = SUBNET_META[subnetNumber];
+    const catalogBase = meta
+      ? {
+          subnetNumber,
+          name: meta.name,
+          category: meta.category || "Others",
+          description: meta.description || "",
+        }
+      : { subnetNumber };
+    setEditing((prev) => ({
+      ...prev,
+      [subnetNumber]: {
+        ...catalogBase,
+        ...(configs.find((c) => c.subnetNumber === subnetNumber) || {}),
+        ...(prev[subnetNumber] || {}),
+        [field]: value,
+      },
+    }));
+  };
+
+  const handleCancel = (subnetNumber) => {
+    setEditing((prev) => {
+      const next = { ...prev };
+      delete next[subnetNumber];
+      return next;
+    });
+  };
+
+  const handleSave = async (subnetNumber) => {
+    const edit = editing[subnetNumber];
+    if (!edit) return;
+    setSaving((p) => ({ ...p, [subnetNumber]: true }));
+    setErr("");
+    try {
+      await api(`/subnet-config/${subnetNumber}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: edit.name,
+          category: edit.category,
+          description: edit.description,
+        }),
+      });
+      handleCancel(subnetNumber);
+      await fetchAll();
+      setSaved((p) => ({ ...p, [subnetNumber]: true }));
+      setTimeout(
+        () =>
+          setSaved((p) => {
+            const n = { ...p };
+            delete n[subnetNumber];
+            return n;
+          }),
+        1800,
+      );
+    } catch (e) {
+      setErr(e.message || "Save failed");
+    } finally {
+      setSaving((p) => {
+        const n = { ...p };
+        delete n[subnetNumber];
+        return n;
+      });
+    }
+  };
+
+  const handleSeed = async () => {
+    setSeeding(true);
+    setErr("");
+    try {
+      await api("/subnet-config/seed", { method: "POST" });
+      await fetchAll();
+    } catch (e) {
+      setErr(e.message || "Seed failed");
+    } finally {
+      setSeeding(false);
+    }
+  };
+
+  const allCatNames = SUBNET_CATEGORIES;
+
+  // Show ALL known subnets: start from the full static catalog, then overlay any
+  // saved DB config (which wins). This means the page lists every subnet even
+  // before it has been seeded/edited, instead of only the rows present in the DB.
+  const mergedSubnets = (() => {
+    const byNum = {};
+    for (const [numStr, meta] of Object.entries(SUBNET_META)) {
+      const n = Number(numStr);
+      byNum[n] = {
+        subnetNumber: n,
+        name: meta.name,
+        category: meta.category || "Others",
+        description: meta.description || "",
+      };
+    }
+    for (const c of configs) {
+      const base = byNum[c.subnetNumber] || { subnetNumber: c.subnetNumber };
+      byNum[c.subnetNumber] = {
+        ...base,
+        ...c,
+        // Ignore stale/invalid categories from old data — fall back to catalog.
+        category: SUBNET_CATEGORIES.includes(c.category)
+          ? c.category
+          : base.category || "Others",
+      };
+    }
+    return Object.values(byNum).sort(
+      (a, b) => a.subnetNumber - b.subnetNumber,
+    );
+  })();
+
+  const filtered = mergedSubnets.filter((c) => {
+    const cur = editing[c.subnetNumber] || c;
+    const q = search.trim().toLowerCase();
+    const matchesQ =
+      !q ||
+      String(c.subnetNumber).includes(q) ||
+      (cur.name || "").toLowerCase().includes(q) ||
+      (cur.category || "").toLowerCase().includes(q);
+    const matchesCat =
+      catFilter === "all" || (cur.category || "Others") === catFilter;
+    return matchesQ && matchesCat;
+  });
+
+  const dirtyCount = Object.keys(editing).length;
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 20,
+        maxWidth: 1000,
+        margin: "0 auto",
+        width: "100%",
+      }}
+    >
+      {/* Header */}
+      <div
+        className="fu"
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          gap: 16,
+        }}
+      >
+        <div>
+          <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
+            Subnet Settings
+          </h2>
+          <p style={{ color: "var(--muted)", fontSize: 14 }}>
+            Rename subnets, set categories &amp; descriptions · applied across
+            intel reports
+          </p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Badge color="gray">
+            {mergedSubnets.length} subnet
+            {mergedSubnets.length !== 1 ? "s" : ""}
+          </Badge>
+          <button
+            onClick={handleSeed}
+            disabled={seeding}
+            title="Populate settings from the live subnet channels (won't overwrite existing edits)"
+            style={{
+              padding: "8px 16px",
+              background: "rgba(59,130,246,.12)",
+              color: "#93c5fd",
+              borderRadius: 8,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: seeding ? "not-allowed" : "pointer",
+              border: "1px solid rgba(59,130,246,.3)",
+              opacity: seeding ? 0.5 : 1,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {seeding ? "Loading…" : "⟳ Load subnets"}
+          </button>
+        </div>
+      </div>
+
+      {err && <ErrBox msg={err} />}
+
+      {/* Toolbar */}
+      <div
+        className="fu1"
+        style={{ display: "flex", gap: 10, alignItems: "center" }}
+      >
+        <div style={{ position: "relative", flex: 1 }}>
+          <span
+            style={{
+              position: "absolute",
+              left: 14,
+              top: "50%",
+              transform: "translateY(-50%)",
+              color: "var(--muted)",
+              fontSize: 15,
+              pointerEvents: "none",
+            }}
+          >
+            ⌕
+          </span>
+          <input
+            placeholder="Search by number, name, or category…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ paddingLeft: 38 }}
+          />
+        </div>
+        <select
+          value={catFilter}
+          onChange={(e) => setCatFilter(e.target.value)}
+          style={{ width: 210 }}
+        >
+          <option value="all">All categories</option>
+          {allCatNames.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {loading ? (
+        <div style={{ display: "flex", justifyContent: "center", paddingTop: 80 }}>
+          <Spinner size={36} />
+        </div>
+      ) : filtered.length === 0 ? (
+        <Card style={{ padding: 52 }}>
+          <Empty msg="No subnets match your filters" />
+        </Card>
+      ) : (
+        <Card className="fu2" style={{ overflow: "hidden" }}>
+          <CardHeader
+            title={`Subnets · ${filtered.length}`}
+            action={
+              dirtyCount > 0 ? (
+                <Badge color="amber">{dirtyCount} unsaved</Badge>
+              ) : null
+            }
+          />
+          <div>
+            {filtered.map((c, i) => {
+              const cur = editing[c.subnetNumber] || c;
+              const isDirty = !!editing[c.subnetNumber];
+              const isSaving = !!saving[c.subnetNumber];
+              const justSaved = !!saved[c.subnetNumber];
+              const options = Array.from(
+                new Set([...allCatNames, cur.category].filter(Boolean)),
+              );
+              return (
+                <div
+                  key={c.subnetNumber}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "52px 1fr 220px 110px",
+                    gap: 16,
+                    alignItems: "start",
+                    padding: "16px 20px",
+                    borderBottom:
+                      i < filtered.length - 1
+                        ? "1px solid var(--border)"
+                        : "none",
+                    borderLeft: isDirty
+                      ? "2px solid var(--accent)"
+                      : "2px solid transparent",
+                    background: isDirty ? "rgba(59,130,246,.03)" : "transparent",
+                    transition: "background .15s",
+                  }}
+                >
+                  {/* SN chip */}
+                  <div
+                    style={{
+                      fontFamily: "var(--mono)",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "#93c5fd",
+                      background: "rgba(59,130,246,.1)",
+                      border: "1px solid rgba(59,130,246,.2)",
+                      borderRadius: 8,
+                      height: 40,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {c.subnetNumber}
+                  </div>
+
+                  {/* Name + description */}
+                  <div
+                    style={{ display: "flex", flexDirection: "column", gap: 8 }}
+                  >
+                    <input
+                      value={cur.name || ""}
+                      placeholder="Subnet name"
+                      onChange={(e) =>
+                        updateField(c.subnetNumber, "name", e.target.value)
+                      }
+                    />
+                    <input
+                      value={cur.description || ""}
+                      placeholder="Short description (optional)"
+                      onChange={(e) =>
+                        updateField(
+                          c.subnetNumber,
+                          "description",
+                          e.target.value,
+                        )
+                      }
+                      style={{ fontSize: 13, color: "var(--muted)" }}
+                    />
+                  </div>
+
+                  {/* Category */}
+                  <div
+                    style={{ display: "flex", flexDirection: "column", gap: 8 }}
+                  >
+                    <select
+                      value={cur.category || "Others"}
+                      onChange={(e) =>
+                        updateField(c.subnetNumber, "category", e.target.value)
+                      }
+                    >
+                      {options.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Actions / status */}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      alignItems: "stretch",
+                      justifyContent: "center",
+                      minHeight: 40,
+                    }}
+                  >
+                    {isDirty ? (
+                      <>
+                        <button
+                          onClick={() => handleSave(c.subnetNumber)}
+                          disabled={isSaving}
+                          style={{
+                            padding: "8px 0",
+                            borderRadius: 8,
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: "#fff",
+                            background: "linear-gradient(135deg,#3b82f6,#6366f1)",
+                            opacity: isSaving ? 0.6 : 1,
+                            cursor: isSaving ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {isSaving ? "Saving…" : "Save"}
+                        </button>
+                        <button
+                          onClick={() => handleCancel(c.subnetNumber)}
+                          disabled={isSaving}
+                          style={{
+                            padding: "7px 0",
+                            borderRadius: 8,
+                            fontSize: 13,
+                            fontWeight: 500,
+                            color: "var(--muted)",
+                            background: "transparent",
+                            border: "1px solid var(--border)",
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : justSaved ? (
+                      <div style={{ textAlign: "center" }}>
+                        <Badge color="green">✓ Saved</Badge>
+                      </div>
+                    ) : (
+                      <div style={{ textAlign: "center" }}>
+                        <Badge color={catColor(cur.category)}>
+                          {cur.category || "Others"}
+                        </Badge>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+};
+
+
+
+
+
+
+
+
+
+
+
 // ── SUBNET INTELLIGENCE v2 ────────────────────────────────────────────────────
 // NAV:   { id:"subnets", icon:"⬡", label:"Subnet Intel" }
 // PAGES: subnets: SubnetIntel
 
 function SubnetIntel() {
-  const [tab, setTab]             = useState("today");
-  const [todayReports, setToday]  = useState([]);
-  const [allReports, setAll]      = useState([]);
-  const [leaderboard, setLb]      = useState([]);
-  const [schedule, setSched]      = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [running, setRunning]     = useState(false);
-  const [err, setErr]             = useState("");
-  const [openReport, setOpen]     = useState(null);  // full detail modal
+  const [tab, setTab] = useState("today");
+  const [todayReports, setToday] = useState([]);
+  const [allReports, setAll] = useState([]);
+  const [leaderboard, setLb] = useState([]);
+  const [schedule, setSched] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [pausing, setPausing] = useState(false);
+  const [err, setErr] = useState("");
+  const [openReport, setOpen] = useState(null); // full detail modal
+  const [configMap, setConfigMap] = useState({}); // subnet -> { name, category, description }
 
   const load = async () => {
-    setLoading(true); setErr("");
+    setLoading(true);
+    setErr("");
     try {
-      const [today, lb, sc] = await Promise.all([
+      const [today, lb, sc, cfg] = await Promise.all([
         api("/subnets/today"),
         api("/subnets/leaderboard"),
         api("/subnets/schedule"),
+        api("/subnet-config"),
       ]);
       setToday(today);
       setLb(lb);
       setSched(sc);
-    } catch (e) { setErr(e.message); }
+      const map = {};
+      for (const c of cfg) map[c.subnetNumber] = c;
+      setConfigMap(map);
+    } catch (e) {
+      setErr(e.message);
+    }
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
   const runNow = async (nums = null) => {
     setRunning(true);
     try {
-      await api("/subnets/run", { method: "POST", body: JSON.stringify({ subnetNumbers: nums }) });
+      await api("/subnets/run", {
+        method: "POST",
+        body: JSON.stringify({ subnetNumbers: nums }),
+      });
       setTimeout(load, 4000);
-    } catch (e) { setErr(e.message); }
+    } catch (e) {
+      setErr(e.message);
+    }
     setRunning(false);
   };
 
+  const pauseAnalysis = async (days = null) => {
+    setPausing(true);
+    setErr("");
+    try {
+      await api("/subnets/pause", {
+        method: "POST",
+        body: JSON.stringify(days ? { days } : {}),
+      });
+      await load();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setPausing(false);
+  };
+
+  const resumeAnalysis = async () => {
+    setPausing(true);
+    setErr("");
+    try {
+      await api("/subnets/resume", { method: "POST" });
+      await load();
+    } catch (e) {
+      setErr(e.message);
+    }
+    setPausing(false);
+  };
+
   // ── colour helpers
-  const scoreColor = s =>
+  const scoreColor = (s) =>
     s >= 8.5 ? "#10b981" : s >= 7 ? "#3b82f6" : s >= 5 ? "#f59e0b" : "#ef4444";
 
-  const sentColor = s =>
-    s === "positive" ? "#10b981" : s === "negative" ? "#ef4444" :
-    s === "mixed"    ? "#f59e0b" : "#64748b";
+  const sentColor = (s) =>
+    s === "positive"
+      ? "#10b981"
+      : s === "negative"
+        ? "#ef4444"
+        : s === "mixed"
+          ? "#f59e0b"
+          : "#64748b";
 
-  const confColor = c =>
+  const confColor = (c) =>
     c === "HIGH" ? "#10b981" : c === "MEDIUM" ? "#f59e0b" : "#64748b";
+
+  // Map a raw backend error into a short, user-facing reason.
+  const friendlyError = (msg) => {
+    const m = (msg || "").toLowerCase();
+    if (/rate.?limit|\b429\b|quota|exceed|too many/.test(m))
+      return "Limit exceeded — try again later";
+    if (/timeout|timed out|etimedout|econnreset/.test(m))
+      return "Timed out — try again";
+    if (/json|parse/.test(m)) return "Analysis error — couldn't read the report";
+    if (/not enough|no data|insufficient/.test(m))
+      return "Not enough messages to analyze";
+    return "Something went wrong";
+  };
 
   // ── Score ring SVG
   const ScoreRing = ({ score, size = 60 }) => {
@@ -615,17 +1268,64 @@ function SubnetIntel() {
     const circ = 2 * Math.PI * r;
     const dash = (score / 10) * circ;
     return (
-      <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+      <div
+        style={{
+          position: "relative",
+          width: size,
+          height: size,
+          flexShrink: 0,
+        }}
+      >
         <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
-          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,.07)" strokeWidth={5}/>
-          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={scoreColor(score)}
-            strokeWidth={5} strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"/>
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            stroke="rgba(255,255,255,.07)"
+            strokeWidth={5}
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            stroke={scoreColor(score)}
+            strokeWidth={5}
+            strokeDasharray={`${dash} ${circ}`}
+            strokeLinecap="round"
+          />
         </svg>
-        <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
-          <span style={{ fontSize: size>52?15:11, fontWeight:800, color:scoreColor(score), fontFamily:"var(--mono)", lineHeight:1 }}>
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <span
+            style={{
+              fontSize: size > 52 ? 15 : 11,
+              fontWeight: 800,
+              color: scoreColor(score),
+              fontFamily: "var(--mono)",
+              lineHeight: 1,
+            }}
+          >
             {score?.toFixed(1)}
           </span>
-          <span style={{ fontSize:8, color:"var(--muted)", textTransform:"uppercase" }}>/10</span>
+          <span
+            style={{
+              fontSize: 8,
+              color: "var(--muted)",
+              textTransform: "uppercase",
+            }}
+          >
+            /10
+          </span>
         </div>
       </div>
     );
@@ -633,12 +1333,52 @@ function SubnetIntel() {
 
   // ── Mini breakdown bar
   const MiniBar = ({ label, value }) => (
-    <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:5 }}>
-      <span style={{ fontSize:12, color:"var(--muted)", width:170, flexShrink:0 }}>{label}</span>
-      <div style={{ flex:1, height:5, borderRadius:3, background:"rgba(255,255,255,.06)", overflow:"hidden" }}>
-        <div style={{ width:`${(value/10)*100}%`, height:"100%", background:scoreColor(value), borderRadius:3 }}/>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        marginBottom: 5,
+      }}
+    >
+      <span
+        style={{
+          fontSize: 12,
+          color: "var(--muted)",
+          width: 170,
+          flexShrink: 0,
+        }}
+      >
+        {label}
+      </span>
+      <div
+        style={{
+          flex: 1,
+          height: 5,
+          borderRadius: 3,
+          background: "rgba(255,255,255,.06)",
+          overflow: "hidden",
+        }}
+      >
+        <div
+          style={{
+            width: `${(value / 10) * 100}%`,
+            height: "100%",
+            background: scoreColor(value),
+            borderRadius: 3,
+          }}
+        />
       </div>
-      <span style={{ fontSize:11, fontWeight:700, color:scoreColor(value), fontFamily:"var(--mono)", width:26, textAlign:"right" }}>
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          color: scoreColor(value),
+          fontFamily: "var(--mono)",
+          width: 26,
+          textAlign: "right",
+        }}
+      >
         {value?.toFixed(1)}
       </span>
     </div>
@@ -647,149 +1387,303 @@ function SubnetIntel() {
   // ────────────────────────────────────────────────────────────────────────────
   // TODAY CARD — brief, clickable
   // ────────────────────────────────────────────────────────────────────────────
-  const TodayCard = ({ r }) => {
-    const rpt = r.report || {};
-    const score = rpt.investabilityScore;
-    const topics = (rpt.mainTopics || []).slice(0, 3);
+ const TodayTabContent = ({
+  todayReports,
+  setOpen,
+  scoreColor,
+  sentColor,
+  ScoreRing,
+  configMap = {}, // ← NEW: { [subnetNumber]: { name, category } }
+}) => {
+  // Sort ascending: subnet 1 first, subnet 150 last
+  const sorted = [...todayReports].sort(
+    (a, b) => a.subnetNumber - b.subnetNumber,
+  );
 
-    return (
+  return sorted.length === 0 ? (
+    <Card style={{ padding: 52 }}>
+      <Empty msg="No reports yet — go to Schedule tab and click Run to generate today's analysis" />
+    </Card>
+  ) : (
+    <>
+      {/* Date header */}
       <div
-        onClick={() => setOpen(r)}
         style={{
-          background:"var(--card)", border:`1px solid var(--border)`,
-          borderRadius:18, padding:"22px 24px", cursor:"pointer",
-          transition:"all .18s", display:"flex", flexDirection:"column", gap:16,
-          minWidth:340,   // ← add this
-          maxWidth:380,   // ← add this
-          flex:"0 0 auto", // ← add this
-        }}
-        onMouseEnter={e => {
-          e.currentTarget.style.borderColor = scoreColor(score) + "66";
-          e.currentTarget.style.transform = "translateY(-2px)";
-          e.currentTarget.style.boxShadow = `0 8px 32px ${scoreColor(score)}18`;
-        }}
-        onMouseLeave={e => {
-          e.currentTarget.style.borderColor = "var(--border)";
-          e.currentTarget.style.transform = "none";
-          e.currentTarget.style.boxShadow = "none";
+          padding: "20px 28px",
+          background:
+            "linear-gradient(135deg, rgba(59,130,246,.08), rgba(139,92,246,.05))",
+          border: "1px solid rgba(59,130,246,.15)",
+          borderRadius: 16,
         }}
       >
-        {/* Top row */}
-        <div style={{ display:"flex", alignItems:"flex-start", gap:14 }}>
-          {/* Subnet number badge */}
-          <div style={{
-            width:48, height:48, borderRadius:12, flexShrink:0,
-            background:`linear-gradient(135deg,${scoreColor(score)}25,${scoreColor(score)}10)`,
-            border:`1px solid ${scoreColor(score)}40`,
-            display:"flex", alignItems:"center", justifyContent:"center",
-            fontSize:15, fontWeight:800, color:scoreColor(score), fontFamily:"var(--mono)",
-          }}>{r.subnetNumber}</div>
-
-          <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontSize:16, fontWeight:700, marginBottom:3 }}>
-              {rpt.subnetName || r.channelName}
-            </div>
-            <div style={{ fontSize:12, color:"var(--muted)" }}>
-              Subnet {r.subnetNumber} · {new Date(r.reportDate || r.generatedAt).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}
-            </div>
-          </div>
-
-          <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}>
-            <ScoreRing score={score} size={58}/>
-            <span style={{ fontSize:10, fontWeight:700, color:scoreColor(score), textTransform:"uppercase", letterSpacing:".06em" }}>
-              {rpt.scoreLabel || "—"}
-            </span>
-          </div>
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: "var(--muted)",
+            textTransform: "uppercase",
+            letterSpacing: ".12em",
+            marginBottom: 6,
+          }}
+        >
+          Daily Intelligence Report
         </div>
-
-        {/* Brief description */}
-        {rpt.briefDescription && (
-          <p style={{ fontSize:13, color:"#94a3b8", lineHeight:1.65, margin:0 }}>
-            {rpt.briefDescription}
-          </p>
-        )}
-
-        {/* Sentiment pill + message count */}
-        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-          {rpt.overallSentiment && (
-            <span style={{
-              fontSize:11, fontWeight:600, padding:"2px 9px", borderRadius:5,
-              background:`${sentColor(rpt.overallSentiment)}18`,
-              color:sentColor(rpt.overallSentiment),
-              border:`1px solid ${sentColor(rpt.overallSentiment)}35`,
-            }}>{rpt.overallSentiment}</span>
-          )}
-          {rpt.samplingMethod === "stratified_random" && (
-            <span style={{
-              fontSize:10, padding:"2px 8px", borderRadius:4, fontWeight:600,
-              background:"rgba(245,158,11,.1)", border:"1px solid rgba(245,158,11,.2)", color:"#fbbf24",
-              textTransform:"uppercase", letterSpacing:".05em",
-            }}>Sampled {rpt.messageCount}/{rpt.totalMessages}</span>
-          )}
-          {rpt.messageCount > 0 && rpt.samplingMethod !== "stratified_random" && (
-            <span style={{ fontSize:11, color:"var(--muted)", fontFamily:"var(--mono)" }}>
-              {rpt.messageCount?.toLocaleString()} msgs
-            </span>
-          )}
-          <span style={{ marginLeft:"auto", fontSize:12, color:"var(--accent)" }}>
-            View full report →
-          </span>
+        <div
+          style={{
+            fontSize: 28,
+            fontWeight: 800,
+            background: "linear-gradient(135deg,#60a5fa,#a78bfa)",
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+            backgroundClip: "text",
+            letterSpacing: "-.5px",
+          }}
+        >
+          {new Date().toLocaleDateString("en-US", {
+            weekday: "long",
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })}
         </div>
-
-        {/* Topic previews */}
-        {topics.length > 0 && (
-          <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
-            {topics.map((t,i) => (
-              <span key={i} style={{
-                fontSize:11, padding:"3px 9px", borderRadius:5,
-                background:"rgba(59,130,246,.08)", border:"1px solid rgba(59,130,246,.15)", color:"#7dd3fc",
-              }}>{t.title}</span>
-            ))}
-            {(rpt.mainTopics||[]).length > 3 && (
-              <span style={{ fontSize:11, color:"var(--dim)" }}>+{rpt.mainTopics.length-3} more</span>
-            )}
-          </div>
-        )}
+        <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 6 }}>
+          {sorted.length} subnet{sorted.length !== 1 ? "s" : ""} analyzed
+          today
+        </div>
       </div>
-    );
-  };
+
+      <Card style={{ overflow: "hidden" }}>
+        {sorted.map((r, i) => {
+          const rpt = r.report?.report || r.report || {};
+          const score = rpt.investabilityScore;
+
+          // ── Resolve display name: client config > hardcoded meta > AI name > channel name cleanup
+          const config = configMap[r.subnetNumber];
+          const meta = SUBNET_META[r.subnetNumber];
+          const displayName =
+            config?.name ||
+            meta?.name ||
+            rpt.subnetName ||
+            extractCleanName(r.channelName) ||
+            r.channelName;
+
+          // ── Resolve description: hardcoded meta > AI brief > AI one-liner
+          const description =
+            meta?.description ||
+            rpt.briefDescription ||
+            rpt.oneLiner ||
+            "No description available";
+
+          return (
+            <div
+              key={r._id}
+              onClick={() => setOpen(r)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 16,
+                padding: "18px 22px",
+                borderBottom:
+                  i < sorted.length - 1 ? "1px solid var(--border)" : "none",
+                cursor: "pointer",
+                transition: "background .12s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255,255,255,.025)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+              }}
+            >
+              {/* Rank */}
+              <div
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 8,
+                  flexShrink: 0,
+                  background: "rgba(255,255,255,.04)",
+                  border: "1px solid var(--border)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  color: "var(--muted)",
+                }}
+              >
+                #{i + 1}
+              </div>
+
+              {/* Subnet Number badge */}
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 11,
+                  flexShrink: 0,
+                  background: `${scoreColor(score)}18`,
+                  border: `1px solid ${scoreColor(score)}40`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 14,
+                  fontWeight: 800,
+                  color: scoreColor(score),
+                  fontFamily: "var(--mono)",
+                }}
+              >
+                {r.subnetNumber}
+              </div>
+
+              {/* Name + Category + Description */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 15,
+                    fontWeight: 700,
+                    marginBottom: 4,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <span>{displayName}</span>
+                  {config?.category && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        padding: "2px 8px",
+                        borderRadius: 5,
+                        background: "rgba(167,139,250,.15)",
+                        border: "1px solid rgba(167,139,250,.3)",
+                        color: "#c4b5fd",
+                        textTransform: "uppercase",
+                        letterSpacing: ".05em",
+                      }}
+                    >
+                      {config.category}
+                    </span>
+                  )}
+                </div>
+                <div
+                  style={{
+                    fontSize: 13,
+                    color: "#94a3b8",
+                    lineHeight: 1.6,
+                    overflow: "hidden",
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                  }}
+                >
+                  {description}
+                </div>
+              </div>
+
+              {/* Sentiment pill */}
+              {rpt.overallSentiment && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "3px 10px",
+                    borderRadius: 5,
+                    flexShrink: 0,
+                    background: `${sentColor(rpt.overallSentiment)}18`,
+                    color: sentColor(rpt.overallSentiment),
+                    border: `1px solid ${sentColor(rpt.overallSentiment)}35`,
+                  }}
+                >
+                  {rpt.overallSentiment}
+                </span>
+              )}
+
+              {/* Score ring */}
+              <ScoreRing score={score} size={52} />
+
+              {/* Arrow */}
+              <span
+                style={{ color: "var(--muted)", fontSize: 16, flexShrink: 0 }}
+              >
+                →
+              </span>
+            </div>
+          );
+        })}
+      </Card>
+    </>
+  );
+};
 
   // ────────────────────────────────────────────────────────────────────────────
   // FULL REPORT MODAL
   // ────────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
+  // REPLACEMENT: Full ReportModal component
+  // Drop this in place of the existing ReportModal inside SubnetIntel.jsx
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // REPLACEMENT: ReportModal component
+  // Changes:
+  //   1. Header uses SUBNET_META clean name + description
+  //   2. Bottom analysis cards replaced with flowing paragraph + bullet layout
+  //   3. Positives/Concerns also get bullet-point detail paragraphs
+  // ─────────────────────────────────────────────────────────────────────────────
   const ReportModal = ({ r, onClose }) => {
-    const rpt = r.report || {};
+    const rpt = r.report?.report || r.report || {}; // ← this line is missing
     const score = rpt.investabilityScore;
     const bd = rpt.investabilityBreakdown || {};
+    const raiseTo9 = Array.isArray(rpt.raiseTo9)
+      ? rpt.raiseTo9
+      : rpt.raiseTo9
+      ? [rpt.raiseTo9]
+      : [];
+
+    const subnetMeta = SUBNET_META[r.subnetNumber];
+    const displayName =
+      subnetMeta?.name ||
+      rpt.subnetName ||
+      extractCleanName(r.channelName) ||
+      r.channelName;
+    const metaDescription =
+      subnetMeta?.description || rpt.briefDescription || null;
 
     const [chatMessages, setChatMsgs] = useState([]);
-    const [chatInput, setChatInput]   = useState("");
-    const [chatLoading, setChatLoad]  = useState(false);
+    const [chatInput, setChatInput] = useState("");
+    const [chatLoading, setChatLoad] = useState(false);
     const chatEndRef = useRef(null);
 
     useEffect(() => {
-      chatEndRef.current?.scrollIntoView({ behavior:"smooth" });
+      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [chatMessages]);
 
     const sendChat = async () => {
       if (!chatInput.trim() || chatLoading) return;
       const q = chatInput.trim();
       setChatInput("");
-      setChatMsgs(prev => [...prev, { role:"user", content:q }]);
+      setChatMsgs((prev) => [...prev, { role: "user", content: q }]);
       setChatLoad(true);
       try {
         const res = await api(`/subnets/chat/${r.subnetNumber}`, {
-          method:"POST",
+          method: "POST",
           body: JSON.stringify({ question: q, days: 30 }),
         });
-        setChatMsgs(prev => [...prev, { role:"assistant", content: res.answer }]);
-      } catch(e) {
-        setChatMsgs(prev => [...prev, { role:"assistant", content:`Error: ${e.message}` }]);
+        setChatMsgs((prev) => [
+          ...prev,
+          { role: "assistant", content: res.answer },
+        ]);
+      } catch (e) {
+        setChatMsgs((prev) => [
+          ...prev,
+          { role: "assistant", content: `Error: ${e.message}` },
+        ]);
       }
       setChatLoad(false);
     };
 
-    // Preset questions
     const PRESETS = [
       "What are the main topics discussed?",
       "Evaluate the investability and give it a score 1-10.",
@@ -798,14 +1692,44 @@ function SubnetIntel() {
       "What is the community sentiment about this subnet?",
     ];
 
-    const Section = ({ icon, title, children }) => (
-      <div style={{ marginBottom:28 }}>
-        <div style={{
-          display:"flex", alignItems:"center", gap:8, marginBottom:16,
-          paddingBottom:10, borderBottom:"1px solid var(--border)",
-        }}>
-          <span style={{ fontSize:18 }}>{icon}</span>
-          <span style={{ fontSize:14, fontWeight:700, color:"#e2e8f0", textTransform:"uppercase", letterSpacing:".08em" }}>
+    // ── Section wrapper
+    const Section = ({ icon, title, children, accentColor = "#3b82f6" }) => (
+      <div style={{ marginBottom: 36 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            marginBottom: 18,
+            paddingBottom: 12,
+            borderBottom: `2px solid ${accentColor}30`,
+          }}
+        >
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              flexShrink: 0,
+              background: `${accentColor}18`,
+              border: `1px solid ${accentColor}35`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 16,
+            }}
+          >
+            {icon}
+          </div>
+          <span
+            style={{
+              fontSize: 13,
+              fontWeight: 700,
+              color: "#e2e8f0",
+              textTransform: "uppercase",
+              letterSpacing: ".1em",
+            }}
+          >
             {title}
           </span>
         </div>
@@ -813,276 +1737,1091 @@ function SubnetIntel() {
       </div>
     );
 
+    // ── Topic block with numbered heading + bullets
+    const TopicBlock = ({ topic, index }) => (
+      <div
+        style={{
+          marginBottom: 24,
+          paddingBottom: 24,
+          borderBottom: "1px solid rgba(255,255,255,.06)",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 12,
+            marginBottom: 10,
+          }}
+        >
+          <div
+            style={{
+              width: 26,
+              height: 26,
+              borderRadius: 6,
+              flexShrink: 0,
+              background: "rgba(59,130,246,.15)",
+              border: "1px solid rgba(59,130,246,.3)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 12,
+              fontWeight: 800,
+              color: "#60a5fa",
+              fontFamily: "var(--mono)",
+              marginTop: 1,
+            }}
+          >
+            {index + 1}
+          </div>
+          <h3
+            style={{
+              fontSize: 16,
+              fontWeight: 700,
+              color: "#f1f5f9",
+              margin: 0,
+              lineHeight: 1.4,
+              flex: 1,
+            }}
+          >
+            {topic.title}
+          </h3>
+        </div>
+        {topic.description && (
+          <p
+            style={{
+              fontSize: 14,
+              color: "#94a3b8",
+              margin: "0 0 12px 38px",
+              lineHeight: 1.75,
+            }}
+          >
+            {topic.description}
+          </p>
+        )}
+        {topic.bulletPoints?.length > 0 && (
+          <ul
+            style={{
+              margin: "0 0 0 38px",
+              padding: 0,
+              listStyle: "none",
+              display: "flex",
+              flexDirection: "column",
+              gap: 7,
+            }}
+          >
+            {topic.bulletPoints.map((bp, j) => (
+              <li
+                key={j}
+                style={{ display: "flex", gap: 10, alignItems: "flex-start" }}
+              >
+                <span
+                  style={{
+                    width: 5,
+                    height: 5,
+                    borderRadius: "50%",
+                    background: "#3b82f6",
+                    flexShrink: 0,
+                    marginTop: 8,
+                  }}
+                />
+                <span
+                  style={{ fontSize: 13, color: "#cbd5e1", lineHeight: 1.7 }}
+                >
+                  {bp}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+
+    // ── Prose block — label + paragraph text (replaces the old grid cards)
+    const ProseBlock = ({ label, labelColor = "#93c5fd", text, prefix }) => {
+      if (!text) return null;
+      // Split on ". " to turn long sentences into readable bullet points
+      const sentences = text
+        .split(/(?<=\.)\s+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 10);
+
+      return (
+        <div style={{ marginBottom: 20 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: labelColor,
+              textTransform: "uppercase",
+              letterSpacing: ".08em",
+              marginBottom: 10,
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            {prefix && <span>{prefix}</span>}
+            {label}
+          </div>
+          {sentences.length > 1 ? (
+            <ul
+              style={{
+                margin: 0,
+                padding: 0,
+                listStyle: "none",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              {sentences.map((s, i) => (
+                <li
+                  key={i}
+                  style={{ display: "flex", gap: 10, alignItems: "flex-start" }}
+                >
+                  <span
+                    style={{
+                      width: 5,
+                      height: 5,
+                      borderRadius: "50%",
+                      background: labelColor,
+                      flexShrink: 0,
+                      marginTop: 8,
+                      opacity: 0.6,
+                    }}
+                  />
+                  <span
+                    style={{ fontSize: 13, color: "#cbd5e1", lineHeight: 1.75 }}
+                  >
+                    {s}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p
+              style={{
+                fontSize: 13,
+                color: "#cbd5e1",
+                margin: 0,
+                lineHeight: 1.75,
+              }}
+            >
+              {text}
+            </p>
+          )}
+        </div>
+      );
+    };
+
     return (
       <div
         onClick={onClose}
         style={{
-          position:"fixed", inset:0, background:"rgba(0,0,0,.8)", zIndex:1000,
-          overflowY:"auto", padding:"20px 16px", backdropFilter:"blur(8px)",
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,.85)",
+          zIndex: 1000,
+          overflowY: "auto",
+          padding: "20px 16px",
+          backdropFilter: "blur(8px)",
         }}
       >
         <div
-          onClick={e => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
           style={{
-            maxWidth:860, margin:"0 auto",
-            background:"var(--surface)", border:"1px solid var(--border)",
-            borderRadius:22, overflow:"hidden",
+            maxWidth: 900,
+            margin: "0 auto",
+            background: "var(--surface)",
+            border: "1px solid var(--border)",
+            borderRadius: 22,
+            overflow: "hidden",
           }}
         >
-          {/* ── Modal header */}
-          <div style={{
-            padding:"22px 28px", borderBottom:"1px solid var(--border)",
-            background:`linear-gradient(135deg,${scoreColor(score)}0d,transparent)`,
-            display:"flex", alignItems:"center", gap:16,
-            position:"sticky", top:0, zIndex:10,
-            backdropFilter:"blur(12px)",
-          }}>
-            <div style={{
-              width:54, height:54, borderRadius:14, flexShrink:0,
-              background:`${scoreColor(score)}20`, border:`1px solid ${scoreColor(score)}45`,
-              display:"flex", alignItems:"center", justifyContent:"center",
-              fontSize:18, fontWeight:800, color:scoreColor(score), fontFamily:"var(--mono)",
-            }}>{r.subnetNumber}</div>
-            <div style={{ flex:1 }}>
-              <h2 style={{ fontSize:20, fontWeight:800, margin:"0 0 4px" }}>
-                {rpt.subnetName || r.channelName}
+          {/* ── STICKY MODAL HEADER */}
+          <div
+            style={{
+              padding: "22px 28px",
+              borderBottom: "1px solid var(--border)",
+              background: `linear-gradient(135deg,${scoreColor(score)}0d,transparent)`,
+              display: "flex",
+              alignItems: "center",
+              gap: 16,
+              position: "sticky",
+              top: 0,
+              zIndex: 10,
+              backdropFilter: "blur(12px)",
+            }}
+          >
+            <div
+              style={{
+                width: 54,
+                height: 54,
+                borderRadius: 14,
+                flexShrink: 0,
+                background: `${scoreColor(score)}20`,
+                border: `1px solid ${scoreColor(score)}45`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 18,
+                fontWeight: 800,
+                color: scoreColor(score),
+                fontFamily: "var(--mono)",
+              }}
+            >
+              {r.subnetNumber}
+            </div>
+
+            <div style={{ flex: 1 }}>
+              {/* ── Clean name from SUBNET_META */}
+              <h2 style={{ fontSize: 20, fontWeight: 800, margin: "0 0 4px" }}>
+                {displayName}
               </h2>
-              <div style={{ fontSize:12, color:"var(--muted)" }}>
-                Subnet {r.subnetNumber} · {new Date(r.reportDate||r.generatedAt).toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"})}
-                {rpt.messageCount > 0 && ` · ${rpt.messageCount?.toLocaleString()} messages analyzed`}
+              {/* ── Clean description from SUBNET_META */}
+              {metaDescription && (
+                <div
+                  style={{
+                    padding: "10px 16px",
+                    borderRadius: 9,
+                    margin: "6px 0 4px",
+                    background: "rgba(59,130,246,.06)",
+                    borderLeft: "3px solid rgba(59,130,246,.5)",
+                    borderTop: "1px solid rgba(59,130,246,.12)",
+                    borderBottom: "1px solid rgba(59,130,246,.12)",
+                    borderRight: "none",
+                    fontSize: 13,
+                    color: "#93c5fd",
+                    fontStyle: "italic",
+                    lineHeight: 1.7,
+                  }}
+                >
+                  {metaDescription}
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                Subnet {r.subnetNumber} ·{" "}
+                {new Date(r.reportDate || r.generatedAt).toLocaleDateString(
+                  "en-US",
+                  {
+                    weekday: "long",
+                    month: "long",
+                    day: "numeric",
+                    year: "numeric",
+                  },
+                )}
               </div>
             </div>
-            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}>
-              <ScoreRing score={score} size={72}/>
-              <span style={{ fontSize:11, fontWeight:700, color:scoreColor(score), textTransform:"uppercase", letterSpacing:".06em" }}>
+
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              <ScoreRing score={score} size={72} />
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: scoreColor(score),
+                  textTransform: "uppercase",
+                  letterSpacing: ".06em",
+                }}
+              >
                 {rpt.scoreLabel}
               </span>
             </div>
-            <button onClick={onClose} style={{ background:"transparent", color:"var(--muted)", fontSize:22, cursor:"pointer", border:"none", padding:"0 4px", marginLeft:8 }}>✕</button>
+            <button
+              onClick={onClose}
+              style={{
+                background: "transparent",
+                color: "var(--muted)",
+                fontSize: 22,
+                cursor: "pointer",
+                border: "none",
+                padding: "0 4px",
+                marginLeft: 8,
+              }}
+            >
+              ✕
+            </button>
           </div>
 
-          <div style={{ padding:"28px 28px 0" }}>
+          <div style={{ padding: "28px 28px 0" }}>
+            {/* ── DOCUMENT META STRIP */}
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "center",
+                flexWrap: "wrap",
+                marginBottom: 24,
+                padding: "14px 18px",
+                background: "rgba(255,255,255,.025)",
+                border: "1px solid rgba(255,255,255,.07)",
+                borderRadius: 12,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "3px 10px",
+                  borderRadius: 5,
+                  background: "rgba(99,102,241,.15)",
+                  border: "1px solid rgba(99,102,241,.3)",
+                  color: "#a5b4fc",
+                  letterSpacing: ".05em",
+                }}
+              >
+                SN{r.subnetNumber}
+              </span>
+              {rpt.overallSentiment && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: "3px 10px",
+                    borderRadius: 5,
+                    background: `${sentColor(rpt.overallSentiment)}18`,
+                    color: sentColor(rpt.overallSentiment),
+                    border: `1px solid ${sentColor(rpt.overallSentiment)}35`,
+                  }}
+                >
+                  {rpt.overallSentiment} sentiment
+                </span>
+              )}
+              {rpt.samplingMethod === "stratified_random" && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    padding: "3px 9px",
+                    borderRadius: 5,
+                    fontWeight: 600,
+                    background: "rgba(245,158,11,.1)",
+                    border: "1px solid rgba(245,158,11,.2)",
+                    color: "#fbbf24",
+                    textTransform: "uppercase",
+                    letterSpacing: ".05em",
+                  }}
+                >
+                  {/* Sampled {rpt.messageCount}/{rpt.totalMessages} */}
+                </span>
+              )}
+              {/* {rpt.messageCount > 0 && rpt.samplingMethod !== "stratified_random" && (
+              <span style={{ fontSize: 12, color: "var(--muted)", fontFamily: "var(--mono)" }}>
+                {rpt.messageCount?.toLocaleString()} msgs · {rpt.analyzedDays || 7}d window
+              </span>
+            )} */}
+              {rpt.mainTopics?.length > 0 && (
+                <span
+                  style={{
+                    marginLeft: "auto",
+                    fontSize: 12,
+                    color: "var(--muted)",
+                  }}
+                >
+                  {rpt.mainTopics.length} topics identified
+                </span>
+              )}
+            </div>
 
-            {/* One-liner */}
-            {rpt.oneLiner && (
-              <div style={{
-                padding:"14px 18px", borderRadius:11, marginBottom:24,
-                background:"rgba(59,130,246,.06)", border:"1px solid rgba(59,130,246,.15)",
-                fontSize:14, color:"#93c5fd", fontStyle:"italic", lineHeight:1.65,
-              }}>"{rpt.oneLiner}"</div>
+            {/* ── ONE-LINER PULL QUOTE */}
+            {/* {rpt.oneLiner && (
+            <div style={{
+              padding: "16px 20px", borderRadius: 11, marginBottom: 28,
+              background: "rgba(59,130,246,.06)",
+              borderLeft: "3px solid rgba(59,130,246,.5)",
+              borderRight: "none", borderTop: "1px solid rgba(59,130,246,.12)", borderBottom: "1px solid rgba(59,130,246,.12)",
+              fontSize: 15, color: "#93c5fd", fontStyle: "italic", lineHeight: 1.7,
+            }}>"{rpt.oneLiner}"</div>
+          )} */}
+
+            {rpt.sentimentDetail && (
+              <p
+                style={{
+                  fontSize: 13,
+                  color: "#64748b",
+                  lineHeight: 1.7,
+                  margin: "0 0 28px",
+                }}
+              >
+                {rpt.sentimentDetail}
+              </p>
             )}
 
-            {/* Sentiment */}
-            {rpt.overallSentiment && (
-              <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:24, flexWrap:"wrap" }}>
-                <span style={{
-                  fontSize:12, fontWeight:600, padding:"4px 12px", borderRadius:6,
-                  background:`${sentColor(rpt.overallSentiment)}18`,
-                  color:sentColor(rpt.overallSentiment),
-                  border:`1px solid ${sentColor(rpt.overallSentiment)}35`,
-                }}>Community sentiment: {rpt.overallSentiment}</span>
-                {rpt.sentimentDetail && (
-                  <span style={{ fontSize:13, color:"var(--muted)" }}>{rpt.sentimentDetail}</span>
-                )}
-              </div>
-            )}
-
-            {/* ── SECTION 1: Main Topics */}
+            {/* ═══════════════════════════════════════════════════════
+              SECTION 1 — ALL TOPICS
+          ═══════════════════════════════════════════════════════ */}
             {rpt.mainTopics?.length > 0 && (
-              <Section icon="📋" title="Main Topics Discussed">
-                {rpt.mainTopics.map((topic, i) => (
-                  <div key={i} style={{ marginBottom:20 }}>
-                    <div style={{ fontSize:15, fontWeight:700, color:"#93c5fd", marginBottom:6 }}>
-                      {i+1}. {topic.title}
-                    </div>
-                    {topic.description && (
-                      <p style={{ fontSize:13, color:"#94a3b8", margin:"0 0 8px", lineHeight:1.65 }}>
-                        {topic.description}
-                      </p>
-                    )}
-                    {topic.bulletPoints?.length > 0 && (
-                      <ul style={{ margin:0, paddingLeft:20 }}>
-                        {topic.bulletPoints.map((bp,j) => (
-                          <li key={j} style={{ fontSize:13, color:"#94a3b8", lineHeight:1.75, marginBottom:3 }}>
-                            {bp}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
+              <Section
+                icon="📋"
+                title={`Topics Discussed (${rpt.mainTopics.length})`}
+                accentColor="#3b82f6"
+              >
+                {rpt.briefDescription && (
+                  <div
+                    style={{
+                      padding: "12px 16px",
+                      borderRadius: 9,
+                      marginBottom: 20,
+                      background: "rgba(255,255,255,.03)",
+                      border: "1px solid rgba(255,255,255,.07)",
+                      fontSize: 13,
+                      color: "#94a3b8",
+                      lineHeight: 1.7,
+                    }}
+                  >
+                    <strong style={{ color: "#cbd5e1", fontWeight: 600 }}>
+                      Overview:{" "}
+                    </strong>
+                    {rpt.briefDescription}
                   </div>
+                )}
+                {rpt.mainTopics.map((topic, i) => (
+                  <TopicBlock key={i} topic={topic} index={i} />
                 ))}
               </Section>
             )}
 
-            {/* ── SECTION 2: Investability */}
-            <Section icon="💰" title="Investability Analysis">
-              <div style={{ background:"var(--card)", border:"1px solid var(--border)", borderRadius:14, padding:"20px 22px", marginBottom:20 }}>
-                {/* Score + breakdown */}
-                <div style={{ display:"flex", gap:28, marginBottom:20, flexWrap:"wrap" }}>
-                  <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
-                    <ScoreRing score={score} size={90}/>
-                    <span style={{ fontSize:13, fontWeight:700, color:scoreColor(score) }}>{rpt.scoreLabel}</span>
+            {/* ═══════════════════════════════════════════════════════
+              SECTION 2 — INVESTABILITY
+          ═══════════════════════════════════════════════════════ */}
+            <Section
+              icon="💰"
+              title="Investability Analysis"
+              accentColor="#10b981"
+            >
+              {/* Score ring + breakdown bars */}
+              <div
+                style={{
+                  background: "var(--card)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 14,
+                  padding: "20px 22px",
+                  marginBottom: 28,
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 28,
+                    marginBottom: rpt.bottomLine ? 20 : 0,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <ScoreRing score={score} size={90} />
+                    <span
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 700,
+                        color: scoreColor(score),
+                      }}
+                    >
+                      {rpt.scoreLabel}
+                    </span>
                   </div>
-                  <div style={{ flex:1, minWidth:200 }}>
+                  <div style={{ flex: 1, minWidth: 200 }}>
                     {[
-                      ["Technology",           bd.technology],
-                      ["Team Execution",       bd.teamExecution],
+                      ["Technology", bd.technology],
+                      ["Team Execution", bd.teamExecution],
                       ["Commercial Potential", bd.commercialPotential],
-                      ["Economic Maturity",    bd.economicMaturity],
-                      ["Decentralization",     bd.decentralization],
-                    ].map(([label,val]) => val != null && <MiniBar key={label} label={label} value={val}/>)}
+                      ["Economic Maturity", bd.economicMaturity],
+                      ["Decentralization", bd.decentralization],
+                    ].map(
+                      ([label, val]) =>
+                        val != null && (
+                          <MiniBar key={label} label={label} value={val} />
+                        ),
+                    )}
                   </div>
                 </div>
-
-                {/* Bottom line */}
                 {rpt.bottomLine && (
-                  <div style={{ padding:"12px 14px", background:"rgba(255,255,255,.03)", border:"1px solid var(--border)", borderRadius:9, fontSize:13, color:"#cbd5e1", lineHeight:1.65 }}>
+                  <div
+                    style={{
+                      padding: "12px 14px",
+                      background: "rgba(255,255,255,.03)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 9,
+                      fontSize: 13,
+                      color: "#cbd5e1",
+                      lineHeight: 1.75,
+                    }}
+                  >
+                    <strong style={{ color: "#e2e8f0", fontWeight: 600 }}>
+                      Bottom line:{" "}
+                    </strong>
                     {rpt.bottomLine}
                   </div>
                 )}
               </div>
 
-              {/* Positives */}
+              {/* Positives — bullet list */}
               {rpt.positives?.length > 0 && (
-                <div style={{ marginBottom:18 }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:"#10b981", textTransform:"uppercase", letterSpacing:".08em", marginBottom:12 }}>
-                    ✅ What Pushes It Higher
+                <div style={{ marginBottom: 24 }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: "#10b981",
+                      textTransform: "uppercase",
+                      letterSpacing: ".08em",
+                      marginBottom: 14,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <span>✅</span> What Pushes It Higher
                   </div>
-                  {rpt.positives.map((p,i) => (
-                    <div key={i} style={{ marginBottom:14 }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-                        <span style={{ fontSize:13, fontWeight:700, color:"#e2e8f0" }}>{i+1}. {p.category}</span>
-                        {p.score != null && (
-                          <span style={{
-                            fontSize:10, fontFamily:"var(--mono)", color:"#10b981",
-                            background:"rgba(16,185,129,.1)", border:"1px solid rgba(16,185,129,.25)",
-                            padding:"1px 7px", borderRadius:4,
-                          }}>{p.score}/10</span>
-                        )}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 14,
+                    }}
+                  >
+                    {rpt.positives.map((p, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          gap: 12,
+                          alignItems: "flex-start",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: "50%",
+                            background: "#10b981",
+                            flexShrink: 0,
+                            marginTop: 7,
+                          }}
+                        />
+                        <div>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              marginBottom: 4,
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 700,
+                                color: "#e2e8f0",
+                              }}
+                            >
+                              {p.category}
+                            </span>
+                            {p.score != null && (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  fontFamily: "var(--mono)",
+                                  color: "#10b981",
+                                  background: "rgba(16,185,129,.1)",
+                                  border: "1px solid rgba(16,185,129,.25)",
+                                  padding: "1px 7px",
+                                  borderRadius: 4,
+                                }}
+                              >
+                                {p.score}/10
+                              </span>
+                            )}
+                          </div>
+                          <p
+                            style={{
+                              fontSize: 13,
+                              color: "#94a3b8",
+                              margin: 0,
+                              lineHeight: 1.75,
+                            }}
+                          >
+                            {p.detail}
+                          </p>
+                        </div>
                       </div>
-                      <p style={{ fontSize:13, color:"#94a3b8", margin:0, lineHeight:1.65 }}>{p.detail}</p>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {/* Concerns */}
+              {/* Concerns — bullet list */}
               {rpt.concerns?.length > 0 && (
-                <div style={{ marginBottom:18 }}>
-                  <div style={{ fontSize:12, fontWeight:700, color:"#f59e0b", textTransform:"uppercase", letterSpacing:".08em", marginBottom:12 }}>
-                    ⚠️ What Holds It Back
+                <div style={{ marginBottom: 24 }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: "#f59e0b",
+                      textTransform: "uppercase",
+                      letterSpacing: ".08em",
+                      marginBottom: 14,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <span>⚠️</span> What Holds It Back
                   </div>
-                  {rpt.concerns.map((c,i) => (
-                    <div key={i} style={{ marginBottom:14 }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
-                        <span style={{ fontSize:13, fontWeight:700, color:"#e2e8f0" }}>{i+1}. {c.category}</span>
-                        {c.score != null && (
-                          <span style={{
-                            fontSize:10, fontFamily:"var(--mono)", color:"#f59e0b",
-                            background:"rgba(245,158,11,.1)", border:"1px solid rgba(245,158,11,.25)",
-                            padding:"1px 7px", borderRadius:4,
-                          }}>{c.score}/10</span>
-                        )}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 14,
+                    }}
+                  >
+                    {rpt.concerns.map((c, i) => (
+                      <div
+                        key={i}
+                        style={{
+                          display: "flex",
+                          gap: 12,
+                          alignItems: "flex-start",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: "50%",
+                            background: "#f59e0b",
+                            flexShrink: 0,
+                            marginTop: 7,
+                          }}
+                        />
+                        <div>
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              marginBottom: 4,
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 700,
+                                color: "#e2e8f0",
+                              }}
+                            >
+                              {c.category}
+                            </span>
+                            {c.score != null && (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  fontFamily: "var(--mono)",
+                                  color: "#f59e0b",
+                                  background: "rgba(245,158,11,.1)",
+                                  border: "1px solid rgba(245,158,11,.25)",
+                                  padding: "1px 7px",
+                                  borderRadius: 4,
+                                }}
+                              >
+                                {c.score}/10
+                              </span>
+                            )}
+                          </div>
+                          <p
+                            style={{
+                              fontSize: 13,
+                              color: "#94a3b8",
+                              margin: 0,
+                              lineHeight: 1.75,
+                            }}
+                          >
+                            {c.detail}
+                          </p>
+                        </div>
                       </div>
-                      <p style={{ fontSize:13, color:"#94a3b8", margin:0, lineHeight:1.65 }}>{c.detail}</p>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {/* What impresses + raise to 9 + lower rating */}
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-                {rpt.whatImpresses && (
-                  <div style={{ padding:"14px 16px", background:"rgba(59,130,246,.06)", border:"1px solid rgba(59,130,246,.15)", borderRadius:10 }}>
-                    <div style={{ fontSize:11, fontWeight:700, color:"#93c5fd", textTransform:"uppercase", letterSpacing:".07em", marginBottom:6 }}>What Impresses Most</div>
-                    <p style={{ fontSize:13, color:"#cbd5e1", margin:0, lineHeight:1.6 }}>{rpt.whatImpresses}</p>
+              {/* ── PROSE BLOCKS (replaced the old 2-col grid) */}
+              <div
+                style={{
+                  borderTop: "1px solid rgba(255,255,255,.06)",
+                  paddingTop: 24,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 0,
+                }}
+              >
+                <ProseBlock
+                  label="What Impresses Most"
+                  labelColor="#93c5fd"
+                  prefix="💡"
+                  text={rpt.whatImpresses}
+                />
+                
+                {rpt.raiseTo9?.length > 0 && (
+                  <div style={{ marginBottom: 20 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "#10b981",
+                        textTransform: "uppercase",
+                        letterSpacing: ".08em",
+                        marginBottom: 10,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <span>🚀</span> What Would need to be done for you to give this subnet a higher rating one month from now
+                    </div>
+                    <ul
+                      style={{
+                        margin: 0,
+                        padding: 0,
+                        listStyle: "none",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 8,
+                      }}
+                    >
+                      {rpt.raiseTo9 .map((item, i) => (
+                        <li
+                          key={i}
+                          style={{
+                            display: "flex",
+                            gap: 10,
+                            alignItems: "flex-start",
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 5,
+                              height: 5,
+                              borderRadius: "50%",
+                              background: "#10b981",
+                              flexShrink: 0,
+                              marginTop: 8,
+                              opacity: 0.6,
+                            }}
+                          />
+                          <span
+                            style={{
+                              fontSize: 13,
+                              color: "#cbd5e1",
+                              lineHeight: 1.75,
+                            }}
+                          >
+                            {item}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 )}
-                {rpt.raiseTo9 && (
-                  <div style={{ padding:"14px 16px", background:"rgba(16,185,129,.05)", border:"1px solid rgba(16,185,129,.15)", borderRadius:10 }}>
-                    <div style={{ fontSize:11, fontWeight:700, color:"#10b981", textTransform:"uppercase", letterSpacing:".07em", marginBottom:6 }}>What Would Raise It to 9/10</div>
-                    <p style={{ fontSize:13, color:"#cbd5e1", margin:0, lineHeight:1.6 }}>{rpt.raiseTo9}</p>
-                  </div>
-                )}
-                {rpt.lowerRating && (
-                  <div style={{ padding:"14px 16px", background:"rgba(239,68,68,.05)", border:"1px solid rgba(239,68,68,.15)", borderRadius:10 }}>
-                    <div style={{ fontSize:11, fontWeight:700, color:"#ef4444", textTransform:"uppercase", letterSpacing:".07em", marginBottom:6 }}>What Would Lower the Rating</div>
-                    <p style={{ fontSize:13, color:"#cbd5e1", margin:0, lineHeight:1.6 }}>{rpt.lowerRating}</p>
-                  </div>
-                )}
-                {rpt.comparisonContext && (
-                  <div style={{ padding:"14px 16px", background:"rgba(139,92,246,.05)", border:"1px solid rgba(139,92,246,.15)", borderRadius:10 }}>
-                    <div style={{ fontSize:11, fontWeight:700, color:"#c4b5fd", textTransform:"uppercase", letterSpacing:".07em", marginBottom:6 }}>Vs. Other Subnets</div>
-                    <p style={{ fontSize:13, color:"#cbd5e1", margin:0, lineHeight:1.6 }}>{rpt.comparisonContext}</p>
-                  </div>
-                )}
+                <ProseBlock
+                  label="What Would Lower the Rating"
+                  labelColor="#ef4444"
+                  prefix="⚠️"
+                  text={rpt.lowerRating}
+                />
+                <ProseBlock
+                  label="How It Compares to Other Subnets"
+                  labelColor="#c4b5fd"
+                  prefix="📊"
+                  text={rpt.comparisonContext}
+                />
               </div>
             </Section>
 
-            {/* ── SECTION 3: Signals & Issues */}
-            {(rpt.emergingSignals?.length > 0 || rpt.userIssues?.length > 0 || rpt.openQuestions?.length > 0) && (
-              <Section icon="📡" title="Signals & Issues">
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16 }}>
-                  {rpt.emergingSignals?.length > 0 && (
-                    <div>
-                      <div style={{ fontSize:12, fontWeight:700, color:"var(--muted)", textTransform:"uppercase", letterSpacing:".08em", marginBottom:12 }}>Emerging Signals</div>
-                      {rpt.emergingSignals.map((s,i) => (
-                        <div key={i} style={{ padding:"10px 12px", borderRadius:9, background:"rgba(255,255,255,.03)", border:"1px solid var(--border)", marginBottom:8 }}>
-                          <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:4 }}>
-                            <span style={{ fontSize:12, fontWeight:600, color:"#e2e8f0" }}>{s.signal}</span>
-                            <span style={{
-                              fontSize:9, padding:"1px 6px", borderRadius:3, fontWeight:700,
-                              textTransform:"uppercase", letterSpacing:".05em",
-                              background:`${confColor(s.confidence)}20`,
-                              color:confColor(s.confidence), border:`1px solid ${confColor(s.confidence)}40`,
-                            }}>{s.confidence}</span>
-                          </div>
-                          {s.description && <p style={{ fontSize:12, color:"#94a3b8", margin:"0 0 4px", lineHeight:1.4 }}>{s.description}</p>}
-                          {s.evidence && (
-                            <div style={{ fontSize:11, color:"var(--dim)", fontStyle:"italic", borderLeft:"2px solid var(--border)", paddingLeft:8 }}>
-                              "{s.evidence}"
+            {/* ═══════════════════════════════════════════════════════
+              SECTION 3 — SIGNALS & ISSUES
+          ═══════════════════════════════════════════════════════ */}
+            {(rpt.emergingSignals?.length > 0 ||
+              rpt.userIssues?.length > 0 ||
+              rpt.openQuestions?.length > 0) && (
+              <Section icon="📡" title="Signals & Issues" accentColor="#f59e0b">
+                {/* Emerging signals — full width stacked */}
+                {rpt.emergingSignals?.length > 0 && (
+                  <div style={{ marginBottom: 24 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "var(--muted)",
+                        textTransform: "uppercase",
+                        letterSpacing: ".08em",
+                        marginBottom: 12,
+                      }}
+                    >
+                      Emerging Signals
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 10,
+                      }}
+                    >
+                      {rpt.emergingSignals.map((s, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            display: "flex",
+                            gap: 12,
+                            alignItems: "flex-start",
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: "50%",
+                              background: confColor(s.confidence),
+                              flexShrink: 0,
+                              marginTop: 7,
+                            }}
+                          />
+                          <div style={{ flex: 1 }}>
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 7,
+                                marginBottom: 4,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  color: "#e2e8f0",
+                                }}
+                              >
+                                {s.signal}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 9,
+                                  padding: "1px 6px",
+                                  borderRadius: 3,
+                                  fontWeight: 700,
+                                  textTransform: "uppercase",
+                                  letterSpacing: ".05em",
+                                  background: `${confColor(s.confidence)}20`,
+                                  color: confColor(s.confidence),
+                                  border: `1px solid ${confColor(s.confidence)}40`,
+                                }}
+                              >
+                                {s.confidence}
+                              </span>
                             </div>
-                          )}
+                            {s.description && (
+                              <p
+                                style={{
+                                  fontSize: 13,
+                                  color: "#94a3b8",
+                                  margin: "0 0 4px",
+                                  lineHeight: 1.7,
+                                }}
+                              >
+                                {s.description}
+                              </p>
+                            )}
+                            {s.evidence && (
+                              <div
+                                style={{
+                                  fontSize: 12,
+                                  color: "var(--dim)",
+                                  fontStyle: "italic",
+                                  borderLeft: "2px solid var(--border)",
+                                  paddingLeft: 10,
+                                  marginTop: 4,
+                                }}
+                              >
+                                "{s.evidence}"
+                              </div>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
-                  )}
-                  <div>
-                    {rpt.userIssues?.length > 0 && (
-                      <div style={{ marginBottom:16 }}>
-                        <div style={{ fontSize:12, fontWeight:700, color:"var(--muted)", textTransform:"uppercase", letterSpacing:".08em", marginBottom:10 }}>User Issues</div>
-                        {rpt.userIssues.map((u,i) => (
-                          <div key={i} style={{ display:"flex", gap:8, marginBottom:6 }}>
-                            <span style={{ color:"#ef4444", flexShrink:0 }}>!</span>
-                            <span style={{ fontSize:12, color:"#94a3b8", lineHeight:1.5 }}>{u}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {rpt.openQuestions?.length > 0 && (
-                      <div>
-                        <div style={{ fontSize:12, fontWeight:700, color:"var(--muted)", textTransform:"uppercase", letterSpacing:".08em", marginBottom:10 }}>Open Questions</div>
-                        {rpt.openQuestions.map((q,i) => (
-                          <div key={i} style={{ display:"flex", gap:8, marginBottom:6 }}>
-                            <span style={{ color:"#f59e0b", flexShrink:0 }}>?</span>
-                            <span style={{ fontSize:12, color:"#94a3b8", lineHeight:1.5 }}>{q}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
-                </div>
+                )}
+
+                {/* User Issues */}
+                {rpt.userIssues?.length > 0 && (
+                  <div style={{ marginBottom: 24 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "var(--muted)",
+                        textTransform: "uppercase",
+                        letterSpacing: ".08em",
+                        marginBottom: 12,
+                      }}
+                    >
+                      User Issues
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 8,
+                      }}
+                    >
+                      {rpt.userIssues.map((u, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            display: "flex",
+                            gap: 10,
+                            alignItems: "flex-start",
+                          }}
+                        >
+                          <span
+                            style={{
+                              color: "#ef4444",
+                              flexShrink: 0,
+                              fontSize: 13,
+                              fontWeight: 700,
+                              marginTop: 1,
+                            }}
+                          >
+                            !
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 13,
+                              color: "#94a3b8",
+                              lineHeight: 1.7,
+                            }}
+                          >
+                            {u}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Open Questions */}
+                {rpt.openQuestions?.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "var(--muted)",
+                        textTransform: "uppercase",
+                        letterSpacing: ".08em",
+                        marginBottom: 12,
+                      }}
+                    >
+                      Open Questions
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 8,
+                      }}
+                    >
+                      {rpt.openQuestions.map((q, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            display: "flex",
+                            gap: 10,
+                            alignItems: "flex-start",
+                          }}
+                        >
+                          <span
+                            style={{
+                              color: "#f59e0b",
+                              flexShrink: 0,
+                              fontSize: 13,
+                              fontWeight: 700,
+                              marginTop: 1,
+                            }}
+                          >
+                            ?
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 13,
+                              color: "#94a3b8",
+                              lineHeight: 1.7,
+                            }}
+                          >
+                            {q}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </Section>
             )}
 
-            {/* ── SECTION 4: Developments to Watch */}
+            {/* ═══════════════════════════════════════════════════════
+              SECTION 4 — DEVELOPMENTS TO WATCH
+          ═══════════════════════════════════════════════════════ */}
             {rpt.developmentsToWatch?.length > 0 && (
-              <Section icon="🔭" title="Developments to Watch">
-                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                  {rpt.developmentsToWatch.map((d,i) => (
-                    <div key={i} style={{ display:"flex", gap:10, alignItems:"flex-start" }}>
-                      <span style={{ color:"var(--accent)", flexShrink:0, marginTop:2, fontSize:13 }}>→</span>
-                      <span style={{ fontSize:13, color:"#94a3b8", lineHeight:1.6 }}>{d}</span>
+              <Section
+                icon="🔭"
+                title="Developments to Watch"
+                accentColor="#8b5cf6"
+              >
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 10 }}
+                >
+                  {rpt.developmentsToWatch.map((d, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        display: "flex",
+                        gap: 12,
+                        alignItems: "flex-start",
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: "50%",
+                          background: "#8b5cf6",
+                          flexShrink: 0,
+                          marginTop: 7,
+                        }}
+                      />
+                      <span
+                        style={{
+                          fontSize: 13,
+                          color: "#94a3b8",
+                          lineHeight: 1.75,
+                        }}
+                      >
+                        {d}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -1090,94 +2829,238 @@ function SubnetIntel() {
             )}
           </div>
 
-          {/* ── CHAT SECTION */}
-          <div style={{ margin:"0 28px 28px", border:"1px solid var(--border)", borderRadius:14, overflow:"hidden" }}>
-            <div style={{
-              padding:"14px 18px", borderBottom:"1px solid var(--border)",
-              background:"rgba(59,130,246,.05)",
-              display:"flex", alignItems:"center", gap:8,
-            }}>
-              <span style={{ fontSize:15 }}>💬</span>
-              <span style={{ fontSize:13, fontWeight:600 }}>Ask about Subnet {r.subnetNumber}</span>
-              <span style={{ fontSize:12, color:"var(--muted)", marginLeft:4 }}>— based on scraped channel data</span>
+          {/* ═══════════════════════════════════════════════════════
+            CHAT SECTION
+        ═══════════════════════════════════════════════════════ */}
+          <div
+            style={{
+              margin: "0 28px 28px",
+              border: "1px solid var(--border)",
+              borderRadius: 14,
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "14px 18px",
+                borderBottom: "1px solid var(--border)",
+                background: "rgba(59,130,246,.05)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <span style={{ fontSize: 15 }}>💬</span>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>
+                Ask about {displayName}
+              </span>
+              <span
+                style={{ fontSize: 12, color: "var(--muted)", marginLeft: 4 }}
+              >
+                — based on scraped channel data
+              </span>
             </div>
 
-            {/* Preset questions */}
             {chatMessages.length === 0 && (
-              <div style={{ padding:"14px 16px", borderBottom:"1px solid var(--border)" }}>
-                <div style={{ fontSize:11, color:"var(--muted)", marginBottom:8, textTransform:"uppercase", letterSpacing:".07em" }}>Quick questions</div>
-                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                  {PRESETS.map((q,i) => (
-                    <button key={i} onClick={() => { setChatInput(q); }} style={{
-                      padding:"5px 12px", background:"rgba(255,255,255,.04)", border:"1px solid var(--border)",
-                      borderRadius:7, fontSize:12, color:"var(--muted)", cursor:"pointer", fontFamily:"var(--font)",
-                      transition:"all .15s",
-                    }}
-                    onMouseEnter={e => { e.target.style.borderColor="rgba(59,130,246,.4)"; e.target.style.color="#93c5fd"; }}
-                    onMouseLeave={e => { e.target.style.borderColor="var(--border)"; e.target.style.color="var(--muted)"; }}
-                    >{q}</button>
+              <div
+                style={{
+                  padding: "14px 16px",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--muted)",
+                    marginBottom: 8,
+                    textTransform: "uppercase",
+                    letterSpacing: ".07em",
+                  }}
+                >
+                  Quick questions
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {PRESETS.map((q, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setChatInput(q)}
+                      style={{
+                        padding: "5px 12px",
+                        background: "rgba(255,255,255,.04)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 7,
+                        fontSize: 12,
+                        color: "var(--muted)",
+                        cursor: "pointer",
+                        fontFamily: "var(--font)",
+                        transition: "all .15s",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.target.style.borderColor = "rgba(59,130,246,.4)";
+                        e.target.style.color = "#93c5fd";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.target.style.borderColor = "var(--border)";
+                        e.target.style.color = "var(--muted)";
+                      }}
+                    >
+                      {q}
+                    </button>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* Chat messages */}
             {chatMessages.length > 0 && (
-              <div style={{ padding:"16px", display:"flex", flexDirection:"column", gap:12, maxHeight:360, overflowY:"auto" }}>
-                {chatMessages.map((msg,i) => (
-                  <div key={i} style={{
-                    display:"flex", gap:10,
-                    flexDirection: msg.role === "user" ? "row-reverse" : "row",
-                  }}>
-                    <div style={{
-                      width:28, height:28, borderRadius:7, flexShrink:0,
-                      background: msg.role === "user" ? "rgba(59,130,246,.2)" : "rgba(139,92,246,.2)",
-                      display:"flex", alignItems:"center", justifyContent:"center", fontSize:12,
-                    }}>
+              <div
+                style={{
+                  padding: "16px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 12,
+                  maxHeight: 360,
+                  overflowY: "auto",
+                }}
+              >
+                {chatMessages.map((msg, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: "flex",
+                      gap: 10,
+                      flexDirection:
+                        msg.role === "user" ? "row-reverse" : "row",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 7,
+                        flexShrink: 0,
+                        background:
+                          msg.role === "user"
+                            ? "rgba(59,130,246,.2)"
+                            : "rgba(139,92,246,.2)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 12,
+                      }}
+                    >
                       {msg.role === "user" ? "👤" : "🧠"}
                     </div>
-                    <div style={{
-                      maxWidth:"78%", padding:"10px 14px", borderRadius:10, fontSize:13, lineHeight:1.65,
-                      background: msg.role === "user" ? "rgba(59,130,246,.12)" : "rgba(255,255,255,.04)",
-                      border: `1px solid ${msg.role === "user" ? "rgba(59,130,246,.25)" : "var(--border)"}`,
-                      color: msg.role === "user" ? "#93c5fd" : "#cbd5e1",
-                      whiteSpace:"pre-wrap",
-                    }}>{msg.content}</div>
+                    <div
+                      style={{
+                        maxWidth: "78%",
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        fontSize: 13,
+                        lineHeight: 1.7,
+                        background:
+                          msg.role === "user"
+                            ? "rgba(59,130,246,.12)"
+                            : "rgba(255,255,255,.04)",
+                        border: `1px solid ${msg.role === "user" ? "rgba(59,130,246,.25)" : "var(--border)"}`,
+                        color: msg.role === "user" ? "#93c5fd" : "#cbd5e1",
+                        whiteSpace: msg.role === "user" ? "pre-wrap" : "normal",
+                      }}
+                    >
+                      {msg.role === "user" ? (
+                        msg.content
+                      ) : (
+                        <RichText text={msg.content} />
+                      )}
+                    </div>
                   </div>
                 ))}
                 {chatLoading && (
-                  <div style={{ display:"flex", gap:10 }}>
-                    <div style={{ width:28, height:28, borderRadius:7, background:"rgba(139,92,246,.2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12 }}>🧠</div>
-                    <div style={{ padding:"10px 14px", borderRadius:10, background:"rgba(255,255,255,.04)", border:"1px solid var(--border)", display:"flex", gap:4, alignItems:"center" }}>
-                      {[0,1,2].map(i => <div key={i} style={{ width:5, height:5, borderRadius:"50%", background:"var(--muted)", animation:`pulse 1.2s ${i*0.2}s infinite` }}/>)}
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <div
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 7,
+                        background: "rgba(139,92,246,.2)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: 12,
+                      }}
+                    >
+                      🧠
+                    </div>
+                    <div
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        background: "rgba(255,255,255,.04)",
+                        border: "1px solid var(--border)",
+                        display: "flex",
+                        gap: 4,
+                        alignItems: "center",
+                      }}
+                    >
+                      {[0, 1, 2].map((i) => (
+                        <div
+                          key={i}
+                          style={{
+                            width: 5,
+                            height: 5,
+                            borderRadius: "50%",
+                            background: "var(--muted)",
+                            animation: `pulse 1.2s ${i * 0.2}s infinite`,
+                          }}
+                        />
+                      ))}
                     </div>
                   </div>
                 )}
-                <div ref={chatEndRef}/>
+                <div ref={chatEndRef} />
               </div>
             )}
 
-            {/* Chat input */}
-            <div style={{ padding:"12px 14px", borderTop: chatMessages.length > 0 ? "1px solid var(--border)" : "none", display:"flex", gap:8 }}>
+            <div
+              style={{
+                padding: "12px 14px",
+                borderTop:
+                  chatMessages.length > 0 ? "1px solid var(--border)" : "none",
+                display: "flex",
+                gap: 8,
+              }}
+            >
               <input
                 value={chatInput}
-                onChange={e => setChatInput(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && !e.shiftKey && sendChat()}
-                placeholder={`Ask anything about Subnet ${r.subnetNumber}…`}
-                style={{ flex:1 }}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) =>
+                  e.key === "Enter" && !e.shiftKey && sendChat()
+                }
+                placeholder={`Ask anything about ${displayName}…`}
+                style={{ flex: 1 }}
                 disabled={chatLoading}
               />
               <button
                 onClick={sendChat}
                 disabled={chatLoading || !chatInput.trim()}
                 style={{
-                  padding:"10px 20px", background:"linear-gradient(135deg,#3b82f6,#6366f1)",
-                  color:"white", borderRadius:9, fontSize:13, fontWeight:600,
-                  cursor: chatLoading || !chatInput.trim() ? "not-allowed" : "pointer",
-                  border:"none", opacity: chatLoading || !chatInput.trim() ? .5 : 1,
-                  fontFamily:"var(--font)", flexShrink:0,
+                  padding: "10px 20px",
+                  background: "linear-gradient(135deg,#3b82f6,#6366f1)",
+                  color: "white",
+                  borderRadius: 9,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor:
+                    chatLoading || !chatInput.trim()
+                      ? "not-allowed"
+                      : "pointer",
+                  border: "none",
+                  opacity: chatLoading || !chatInput.trim() ? 0.5 : 1,
+                  fontFamily: "var(--font)",
+                  flexShrink: 0,
                 }}
-              >{chatLoading ? "…" : "Ask →"}</button>
+              >
+                {chatLoading ? "…" : "Ask →"}
+              </button>
             </div>
           </div>
         </div>
@@ -1187,90 +3070,363 @@ function SubnetIntel() {
 
   // ── LEADERBOARD
   const LeaderboardView = () => (
-    <Card style={{ overflow:"hidden" }}>
-      <CardHeader title="Subnet Investability Leaderboard" action={<Badge color="blue">{leaderboard.length} subnets ranked</Badge>}/>
-      {leaderboard.length === 0
-        ? <Empty msg="No reports yet"/>
-        : leaderboard.map((r,i) => {
+    <Card style={{ overflow: "hidden" }}>
+      <CardHeader
+        title="Subnet Investability Leaderboard"
+        action={<Badge color="blue">{leaderboard.length} subnets ranked</Badge>}
+      />
+      {leaderboard.length === 0 ? (
+        <Empty msg="No reports yet" />
+      ) : (
+        leaderboard.map((r, i) => {
           const rpt = r.report || {};
           const score = rpt.investabilityScore;
           return (
-            <div key={r._id} onClick={() => setOpen(r)}
-              style={{ display:"flex", alignItems:"center", gap:14, padding:"14px 20px", borderBottom: i < leaderboard.length-1 ? "1px solid var(--border)" : "none", cursor:"pointer", transition:"background .1s" }}
-              onMouseEnter={e => e.currentTarget.style.background="rgba(255,255,255,.02)"}
-              onMouseLeave={e => e.currentTarget.style.background="transparent"}
+            <div
+              key={r._id}
+              onClick={() => setOpen(r)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                padding: "14px 20px",
+                borderBottom:
+                  i < leaderboard.length - 1
+                    ? "1px solid var(--border)"
+                    : "none",
+                cursor: "pointer",
+                transition: "background .1s",
+              }}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.background = "rgba(255,255,255,.02)")
+              }
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.background = "transparent")
+              }
             >
-              <div style={{ width:26, textAlign:"center", fontSize:13, fontWeight:700, color:i<3?["#fbbf24","#9ca3af","#c97c3a"][i]:"var(--dim)" }}>
-                #{i+1}
+              <div
+                style={{
+                  width: 26,
+                  textAlign: "center",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  color:
+                    i < 3 ? ["#fbbf24", "#9ca3af", "#c97c3a"][i] : "var(--dim)",
+                }}
+              >
+                #{i + 1}
               </div>
-              <div style={{
-                width:38, height:38, borderRadius:9, flexShrink:0,
-                background:`${scoreColor(score)}18`, border:`1px solid ${scoreColor(score)}35`,
-                display:"flex", alignItems:"center", justifyContent:"center",
-                fontSize:12, fontWeight:800, color:scoreColor(score), fontFamily:"var(--mono)",
-              }}>{r.subnetNumber}</div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:14, fontWeight:600, marginBottom:2 }}>{rpt.subnetName||r.channelName}</div>
-                {rpt.oneLiner && <div style={{ fontSize:12, color:"var(--muted)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{rpt.oneLiner}</div>}
+              <div
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 9,
+                  flexShrink: 0,
+                  background: `${scoreColor(score)}18`,
+                  border: `1px solid ${scoreColor(score)}35`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 12,
+                  fontWeight: 800,
+                  color: scoreColor(score),
+                  fontFamily: "var(--mono)",
+                }}
+              >
+                {r.subnetNumber}
               </div>
-              <ScoreRing score={score} size={44}/>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    {configMap[r.subnetNumber]?.name || rpt.subnetName || r.channelName}
+                    {configMap[r.subnetNumber]?.category && (
+                      <Badge color="purple">{configMap[r.subnetNumber].category}</Badge>
+                    )}
+                  </span>
+                </div>
+                {rpt.oneLiner && (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "var(--muted)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {rpt.oneLiner}
+                  </div>
+                )}
+              </div>
+              <ScoreRing score={score} size={44} />
             </div>
           );
         })
-      }
+      )}
     </Card>
   );
 
   // ── SCHEDULE
   const ScheduleView = () => {
     const sc = schedule;
-    if (!sc) return <Empty msg="No schedule data"/>;
+    if (!sc) return <Empty msg="No schedule data" />;
     return (
-      <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:12 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(3,1fr)",
+            gap: 12,
+          }}
+        >
           {[
-            { label:"Cycle",           val: sc.schedule?.cycleNumber || 1 },
-            { label:"Progress",        val: `${sc.currentIndex||0} / ${sc.total||"?"}` },
-            { label:"Completion",      val: `${sc.progressPercent||0}%` },
-          ].map((s,i) => (
-            <div key={i} style={{ background:"var(--card)", border:"1px solid var(--border)", borderRadius:12, padding:"16px 18px" }}>
-              <div style={{ fontSize:11, fontWeight:600, color:"var(--muted)", textTransform:"uppercase", letterSpacing:".07em", marginBottom:6 }}>{s.label}</div>
-              <div style={{ fontSize:22, fontWeight:700, color:"#93c5fd" }}>{s.val}</div>
+            { label: "Cycle", val: sc.schedule?.cycleNumber || 1 },
+            {
+              label: "Progress",
+              val: `${sc.currentIndex || 0} / ${sc.total || "?"}`,
+            },
+            { label: "Completion", val: `${sc.progressPercent || 0}%` },
+          ].map((s, i) => (
+            <div
+              key={i}
+              style={{
+                background: "var(--card)",
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                padding: "16px 18px",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "var(--muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: ".07em",
+                  marginBottom: 6,
+                }}
+              >
+                {s.label}
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: "#93c5fd" }}>
+                {s.val}
+              </div>
             </div>
           ))}
         </div>
 
-        <Card style={{ padding:20 }}>
-          <div style={{ fontSize:12, color:"var(--muted)", marginBottom:10 }}>Cycle {sc.schedule?.cycleNumber||1} — {sc.total||"?"} total subnets</div>
-          <div style={{ height:8, borderRadius:4, background:"rgba(255,255,255,.05)", overflow:"hidden", marginBottom:8 }}>
-            <div style={{ width:`${sc.progressPercent||0}%`, height:"100%", background:"linear-gradient(90deg,#3b82f6,#6366f1)", borderRadius:4 }}/>
+        {/* Pause / Resume control */}
+        <Card
+          style={{
+            padding: 20,
+            border: sc.isPaused
+              ? "1px solid rgba(245,158,11,.4)"
+              : "1px solid var(--border)",
+            background: sc.isPaused ? "rgba(245,158,11,.06)" : "var(--card)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: 12,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                {sc.isPaused ? "⏸️ Analysis Paused" : "▶️ Analysis Active"}
+              </div>
+              <p
+                style={{
+                  fontSize: 13,
+                  color: "var(--muted)",
+                  margin: 0,
+                  lineHeight: 1.6,
+                }}
+              >
+                {sc.isPaused
+                  ? sc.resumeAt
+                    ? `Held — auto-resumes on ${new Date(
+                        sc.resumeAt,
+                      ).toLocaleDateString()}. Continues from subnet ${
+                        sc.upcoming?.[0]?.subnetNumber ?? "?"
+                      }.`
+                    : `Held indefinitely. Continues from subnet ${
+                        sc.upcoming?.[0]?.subnetNumber ?? "?"
+                      } when resumed.`
+                  : "Daily analysis runs automatically. Pause to hold the rotation without missing reports — it resumes from where it stopped."}
+              </p>
+            </div>
+            {sc.isPaused ? (
+              <button
+                onClick={() => resumeAnalysis()}
+                disabled={pausing}
+                style={{
+                  padding: "10px 22px",
+                  background: "linear-gradient(135deg,#10b981,#059669)",
+                  color: "white",
+                  borderRadius: 9,
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: pausing ? "not-allowed" : "pointer",
+                  border: "none",
+                  opacity: pausing ? 0.5 : 1,
+                  fontFamily: "var(--font)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {pausing ? "…" : "▶ Resume"}
+              </button>
+            ) : (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {[
+                  ["Pause 3d", 3],
+                  ["Pause 7d", 7],
+                  ["Pause ∞", null],
+                ].map(([label, days]) => (
+                  <button
+                    key={label}
+                    onClick={() => pauseAnalysis(days)}
+                    disabled={pausing}
+                    style={{
+                      padding: "10px 16px",
+                      background: "rgba(245,158,11,.12)",
+                      color: "#fbbf24",
+                      borderRadius: 9,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: pausing ? "not-allowed" : "pointer",
+                      border: "1px solid rgba(245,158,11,.3)",
+                      opacity: pausing ? 0.5 : 1,
+                      fontFamily: "var(--font)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {pausing ? "…" : `⏸ ${label}`}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <div style={{ fontSize:12, color:"var(--muted)" }}>Resets after all {sc.total||150} subnets and begins cycle {(sc.schedule?.cycleNumber||1)+1}</div>
+        </Card>
+
+        <Card style={{ padding: 20 }}>
+          <div
+            style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}
+          >
+            Cycle {sc.schedule?.cycleNumber || 1} — {sc.total || "?"} total
+            subnets
+          </div>
+          <div
+            style={{
+              height: 8,
+              borderRadius: 4,
+              background: "rgba(255,255,255,.05)",
+              overflow: "hidden",
+              marginBottom: 8,
+            }}
+          >
+            <div
+              style={{
+                width: `${sc.progressPercent || 0}%`,
+                height: "100%",
+                background: "linear-gradient(90deg,#3b82f6,#6366f1)",
+                borderRadius: 4,
+              }}
+            />
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            Resets after all {sc.total || "?"} subnets and begins cycle{" "}
+            {(sc.schedule?.cycleNumber || 1) + 1}
+          </div>
         </Card>
 
         {sc.upcoming?.length > 0 && (
-          <Card style={{ padding:20 }}>
-            <div style={{ fontSize:12, fontWeight:700, color:"var(--muted)", textTransform:"uppercase", letterSpacing:".08em", marginBottom:14 }}>Next 4 in Rotation</div>
-            {sc.upcoming.map((u,i) => (
-              <div key={i} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
-                <div style={{ width:30, height:30, borderRadius:7, background:"rgba(59,130,246,.1)", border:"1px solid rgba(59,130,246,.2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700, color:"#93c5fd", fontFamily:"var(--mono)" }}>{u.subnetNumber}</div>
-                <span style={{ fontSize:13, color:"#94a3b8" }}>#{u.name}</span>
+          <Card style={{ padding: 20 }}>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                color: "var(--muted)",
+                textTransform: "uppercase",
+                letterSpacing: ".08em",
+                marginBottom: 14,
+              }}
+            >
+              Next 3 in Rotation
+            </div>
+            {sc.upcoming.map((u, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  marginBottom: 8,
+                }}
+              >
+                <div
+                  style={{
+                    width: 30,
+                    height: 30,
+                    borderRadius: 7,
+                    background: "rgba(59,130,246,.1)",
+                    border: "1px solid rgba(59,130,246,.2)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "#93c5fd",
+                    fontFamily: "var(--mono)",
+                  }}
+                >
+                  {u.subnetNumber}
+                </div>
+                <span style={{ fontSize: 13, color: "#94a3b8" }}>
+                  #{u.name}
+                </span>
               </div>
             ))}
           </Card>
         )}
 
-        <Card style={{ padding:20 }}>
-          <div style={{ fontSize:13, fontWeight:600, marginBottom:4 }}>Manual Trigger</div>
-          <p style={{ fontSize:13, color:"var(--muted)", marginBottom:14, lineHeight:1.6 }}>
-            Runs next 4 subnets immediately without waiting for 08:00 UTC. Backfills channel data then runs AI analysis.
+        <Card style={{ padding: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+            Manual Trigger
+          </div>
+          <p
+            style={{
+              fontSize: 13,
+              color: "var(--muted)",
+              marginBottom: 14,
+              lineHeight: 1.6,
+            }}
+          >
+            {sc.isPaused
+              ? "Analysis is paused — resume it above before triggering a rotation run."
+              : "Runs next 3 subnets immediately without waiting for 08:00 UTC. Backfills channel data then runs AI analysis."}
           </p>
-          <button onClick={() => runNow()} disabled={running} style={{
-            padding:"10px 24px", background:"linear-gradient(135deg,#3b82f6,#6366f1)",
-            color:"white", borderRadius:9, fontSize:14, fontWeight:600,
-            cursor: running ? "not-allowed" : "pointer", border:"none",
-            opacity: running ? .5 : 1, fontFamily:"var(--font)",
-          }}>{running ? "⏳ Running…" : "▶ Run Next 4 Subnets Now"}</button>
+          <button
+            onClick={() => runNow()}
+            disabled={running || sc.isPaused}
+            style={{
+              padding: "10px 24px",
+              background: "linear-gradient(135deg,#3b82f6,#6366f1)",
+              color: "white",
+              borderRadius: 9,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: running || sc.isPaused ? "not-allowed" : "pointer",
+              border: "none",
+              opacity: running || sc.isPaused ? 0.5 : 1,
+              fontFamily: "var(--font)",
+            }}
+          >
+            {running ? "⏳ Running…" : "▶ Run Next 3 Subnets Now"}
+          </button>
         </Card>
       </div>
     );
@@ -1278,498 +3434,709 @@ function SubnetIntel() {
 
   // ── MAIN RENDER
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:20 }}>
-      {openReport && <ReportModal r={openReport} onClose={() => setOpen(null)}/>}
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {openReport && (
+        <ReportModal r={openReport} onClose={() => setOpen(null)} />
+      )}
 
       {/* Header */}
-      <div className="fu" style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between" }}>
+      <div
+        className="fu"
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+        }}
+      >
         <div>
-          <h2 style={{ fontSize:24, fontWeight:700, marginBottom:4 }}>Subnet Intelligence</h2>
-          <p style={{ color:"var(--muted)", fontSize:14 }}>
-            Automated daily analysis · 4 subnets/day · 150-subnet rotation · click any card for full report + chat
+          <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
+            Subnet Intelligence
+          </h2>
+          <p style={{ color: "var(--muted)", fontSize: 14 }}>
+            Automated daily analysis · 3 subnets/day · 150-subnet rotation ·
+            click any card for full report + chat
           </p>
         </div>
-        <div style={{ display:"flex", gap:3, background:"var(--card)", border:"1px solid var(--border)", borderRadius:10, padding:4 }}>
-          {[["today","📋 Today"],["leaderboard","🏆 Leaderboard"],["schedule","⏰ Schedule"]].map(([t,label]) => (
-            <button key={t} onClick={() => setTab(t)} style={{
-              padding:"7px 16px", borderRadius:7, fontSize:13, fontWeight:500, cursor:"pointer",
-              background: tab===t ? "rgba(59,130,246,.2)" : "transparent",
-              color: tab===t ? "#93c5fd" : "var(--muted)",
-              border: tab===t ? "1px solid rgba(59,130,246,.3)" : "1px solid transparent",
-              transition:"all .15s", fontFamily:"var(--font)",
-            }}>{label}</button>
+        <div
+          style={{
+            display: "flex",
+            gap: 3,
+            background: "var(--card)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 4,
+          }}
+        >
+          {[
+            ["today", "📋 Today"],
+            ["leaderboard", "🏆 Leaderboard"],
+            ["schedule", "⏰ Schedule"],
+          ].map(([t, label]) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                padding: "7px 16px",
+                borderRadius: 7,
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: "pointer",
+                background: tab === t ? "rgba(59,130,246,.2)" : "transparent",
+                color: tab === t ? "#93c5fd" : "var(--muted)",
+                border:
+                  tab === t
+                    ? "1px solid rgba(59,130,246,.3)"
+                    : "1px solid transparent",
+                transition: "all .15s",
+                fontFamily: "var(--font)",
+              }}
+            >
+              {label}
+            </button>
           ))}
         </div>
       </div>
 
-      {err && <ErrBox msg={err}/>}
+      {err && <ErrBox msg={err} />}
 
-      {loading
-        ? <div style={{ display:"flex", justifyContent:"center", paddingTop:80 }}><Spinner size={36}/></div>
-        : // Replace the today tab content block with this:
-tab === "today"
-  ? todayReports.length === 0
-    ? <Card style={{ padding:52 }}>
-        <Empty msg="No reports yet — go to Schedule tab and click Run to generate today's analysis"/>
-      </Card>
-    : <>
-        {/* Date header */}
-        <div style={{
-          padding: "20px 28px",
-          background: "linear-gradient(135deg, rgba(59,130,246,.08), rgba(139,92,246,.05))",
-          border: "1px solid rgba(59,130,246,.15)",
-          borderRadius: 16,
-        }}>
-          <div style={{ fontSize:11, fontWeight:600, color:"var(--muted)", textTransform:"uppercase", letterSpacing:".12em", marginBottom:6 }}>
-            Daily Intelligence Report
-          </div>
-          <div style={{ fontSize:28, fontWeight:800, background:"linear-gradient(135deg,#60a5fa,#a78bfa)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", backgroundClip:"text", letterSpacing:"-.5px" }}>
-            {new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"})}
-          </div>
-          <div style={{ fontSize:13, color:"var(--muted)", marginTop:6 }}>
-            {todayReports.length} subnet{todayReports.length !== 1 ? "s" : ""} analyzed today
-          </div>
-        </div>
-
-        {/* Leaderboard-style list */}
-        <Card style={{ overflow:"hidden" }}>
-         <Card style={{ overflow: "hidden" }}>
-  {todayReports.map((r, i) => {
-    const rpt = r.report?.report || r.report || {};
-    const score = rpt.investabilityScore;
-
-    const description =
-      rpt.briefDescription ||
-      rpt.oneLiner ||
-      r.briefDescription ||
-      r.oneLiner ||
-      "No description available";
-
-    return (
-      <div
-        key={r._id}
-        onClick={() => setOpen(r)}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 16,
-          padding: "18px 22px",
-          borderBottom:
-            i < todayReports.length - 1
-              ? "1px solid var(--border)"
-              : "none",
-          cursor: "pointer",
-          transition: "background .12s",
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.background =
-            "rgba(255,255,255,.025)";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.background = "transparent";
-        }}
-      >
-        {/* Rank */}
+      {loading ? (
         <div
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: 8,
-            flexShrink: 0,
-            background: "rgba(255,255,255,.04)",
-            border: "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 13,
-            fontWeight: 700,
-            color: "var(--muted)",
-          }}
+          style={{ display: "flex", justifyContent: "center", paddingTop: 80 }}
         >
-          #{i + 1}
+          <Spinner size={36} />
         </div>
-
-        {/* Subnet Number */}
-        <div
-          style={{
-            width: 44,
-            height: 44,
-            borderRadius: 11,
-            flexShrink: 0,
-            background: `${scoreColor(score)}18`,
-            border: `1px solid ${scoreColor(score)}40`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 14,
-            fontWeight: 800,
-            color: scoreColor(score),
-            fontFamily: "var(--mono)",
-          }}
-        >
-          {r.subnetNumber}
-        </div>
-
-        {/* Name + Description */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: 15,
-              fontWeight: 700,
-              marginBottom: 4,
-            }}
-          >
-            {rpt.subnetName || r.channelName}
-          </div>
-
-          <div
-            style={{
-              fontSize: 13,
-              color: "#94a3b8",
-              lineHeight: 1.6,
-              overflow: "hidden",
-              display: "-webkit-box",
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical",
-            }}
-          >
-            {description}
-          </div>
-        </div>
-
-        {/* Sentiment */}
-        {rpt.overallSentiment && (
-          <span
-            style={{
-              fontSize: 11,
-              fontWeight: 600,
-              padding: "3px 10px",
-              borderRadius: 5,
-              flexShrink: 0,
-              background: `${sentColor(
-                rpt.overallSentiment
-              )}18`,
-              color: sentColor(rpt.overallSentiment),
-              border: `1px solid ${sentColor(
-                rpt.overallSentiment
-              )}35`,
-            }}
-          >
-            {rpt.overallSentiment}
-          </span>
-        )}
-
-        {/* Score */}
-        <ScoreRing score={score} size={52} />
-
-        {/* Arrow */}
-        <span
-          style={{
-            color: "var(--muted)",
-            fontSize: 16,
-            flexShrink: 0,
-          }}
-        >
-          →
-        </span>
-      </div>
-    );
-  })}
-</Card>
-        </Card>
-      </>
-          : tab === "leaderboard"
-            ? <LeaderboardView/>
-            : <ScheduleView/>
-      }
-    </div>
-  );
-}
-// ── OVERVIEW ─────────────────────────────────────────────────────────────────
-function Overview() {
-  const [data, setData] = useState(null);
-  const [loading, setLoad] = useState(true);
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    Promise.all([api("/messages/stats"), api("/servers")])
-      .then(([s, sv]) => setData({ s, sv }))
-      .catch((e) => setErr(e.message))
-      .finally(() => setLoad(false));
-  }, []);
-
-  if (loading)
-    return (
-      <div
-        style={{ display: "flex", justifyContent: "center", paddingTop: 80 }}
-      >
-        <Spinner size={36} />
-      </div>
-    );
-  if (err) return <ErrBox msg={err} />;
-
-  const { s, sv } = data;
-  const src = s.bySource || [];
-  const srcColors = {
-    discord: "#5865F2",
-    github: "#3b82f6",
-    twitter: "#06b6d4",
-    other: "#64748b",
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div className="fu">
-        <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
-          Overview
-        </h2>
-        <p style={{ color: "var(--muted)", fontSize: 14 }}>
-          All sources · all time
-        </p>
-      </div>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4,1fr)",
-          gap: 16,
-        }}
-      >
-        {[
-          {
-            label: "Total Messages",
-            val: s.total?.toLocaleString() || "0",
-            sub: "all channels",
-            icon: "💬",
-            accent: true,
-          },
-          {
-            label: "Servers",
-            val: sv.length,
-            sub: `${sv.filter((x) => x.scrapeEnabled).length} scraping`,
-            icon: "🖥️",
-          },
-          // {label:"Top Author",val:s.topAuthors?.[0]?._id||"—",sub:s.topAuthors?.[0]?`${s.topAuthors[0].count} msgs`:"",icon:"👤"},
-          {
-            label: "Sources",
-            val: src.length,
-            sub: src.map((x) => x._id).join(", ") || "none",
-            icon: "📡",
-          },
-        ].map((c, i) => (
-          <div
-            key={c.label}
-            className={`fu${i + 1}`}
-            style={{
-              background: c.accent
-                ? "linear-gradient(135deg,rgba(59,130,246,.12),rgba(139,92,246,.08))"
-                : "var(--card)",
-              border: `1px solid ${c.accent ? "rgba(59,130,246,.25)" : "var(--border)"}`,
-              borderRadius: 16,
-              padding: "20px 24px",
-            }}
-          >
+      ) : // Replace the today tab content block with this:
+      tab === "today" ? (
+        todayReports.length === 0 ? (
+          <Card style={{ padding: 52 }}>
+            <Empty msg="No reports yet — go to Schedule tab and click Run to generate today's analysis" />
+          </Card>
+        ) : (
+          <>
             <div
               style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 6,
+                padding: "20px 28px",
+                background:
+                  "linear-gradient(135deg,rgba(59,130,246,.08),rgba(139,92,246,.05))",
+                border: "1px solid rgba(59,130,246,.15)",
+                borderRadius: 16,
               }}
             >
-              <span
+              <div
                 style={{
                   fontSize: 11,
                   fontWeight: 600,
                   color: "var(--muted)",
                   textTransform: "uppercase",
-                  letterSpacing: ".08em",
+                  letterSpacing: ".12em",
+                  marginBottom: 6,
                 }}
               >
-                {c.label}
-              </span>
-              <span style={{ fontSize: 18, opacity: 0.6 }}>{c.icon}</span>
+                Daily Intelligence Report
+              </div>
+              <div
+                style={{
+                  fontSize: 28,
+                  fontWeight: 800,
+                  background: "linear-gradient(135deg,#60a5fa,#a78bfa)",
+                  WebkitBackgroundClip: "text",
+                  WebkitTextFillColor: "transparent",
+                  backgroundClip: "text",
+                  letterSpacing: "-.5px",
+                }}
+              >
+                {new Date().toLocaleDateString("en-US", {
+                  weekday: "long",
+                  month: "long",
+                  day: "numeric",
+                  year: "numeric",
+                })}
+              </div>
+              <div
+                style={{ fontSize: 13, color: "var(--muted)", marginTop: 6 }}
+              >
+                {(() => {
+                  const failed = todayReports.filter(
+                    (r) => r.status === "failed",
+                  ).length;
+                  const ok = todayReports.length - failed;
+                  return (
+                    <>
+                      {ok} subnet{ok !== 1 ? "s" : ""} analyzed
+                      {failed > 0 && (
+                        <span style={{ color: "#ef4444" }}>
+                          {" "}
+                          · {failed} unavailable
+                        </span>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
             </div>
-            <div
-              style={{
-                fontSize: 26,
-                fontWeight: 700,
-                color: c.accent ? "#93c5fd" : "var(--text)",
-              }}
-            >
-              {c.val}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
-              {c.sub}
-            </div>
-          </div>
-        ))}
-      </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
-        <Card className="fu2">
-          <CardHeader
-            title="Daily Activity"
-            action={<Badge color="blue">Last 30 days</Badge>}
-          />
-          <div style={{ padding: "20px 16px 16px" }}>
-            {(s.byDay || []).length === 0 ? (
-              <Empty msg="No activity yet — run a backfill" />
-            ) : (
-              <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={s.byDay}>
-                  <defs>
-                    <linearGradient id="ga" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke="rgba(255,255,255,.04)"
-                  />
-                  <XAxis
-                    dataKey="_id"
-                    tick={{ fontSize: 11, fill: "#475569" }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 11, fill: "#475569" }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <Tooltip content={<Tip />} />
-                  <Area
-                    type="monotone"
-                    dataKey="count"
-                    name="Messages"
-                    stroke="#3b82f6"
-                    fill="url(#ga)"
-                    strokeWidth={2}
-                    dot={false}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-        </Card>
+            <Card style={{ overflow: "hidden" }}>
+              {[...todayReports]
+                .sort((a, b) => {
+                  // Failed rows sink to the bottom; otherwise sort by subnet number
+                  const af = a.status === "failed" ? 1 : 0;
+                  const bf = b.status === "failed" ? 1 : 0;
+                  return af - bf || a.subnetNumber - b.subnetNumber;
+                })
+                .map((r, i, arr) => {
+                  const config = configMap[r.subnetNumber];
+                  const meta = SUBNET_META[r.subnetNumber];
+                  const displayName =
+                    config?.name ||
+                    meta?.name ||
+                    r.report?.subnetName ||
+                    extractCleanName(r.channelName) ||
+                    r.channelName;
+                  const category = config?.category || meta?.category;
 
-        <Card className="fu3">
-          <CardHeader title="By Source" />
-          <div style={{ padding: 20 }}>
-            {src.length === 0 ? (
-              <Empty msg="No data" />
-            ) : (
-              <>
-                <ResponsiveContainer width="100%" height={120}>
-                  <PieChart>
-                    <Pie
-                      data={src}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={32}
-                      outerRadius={52}
-                      dataKey="count"
-                      paddingAngle={4}
-                    >
-                      {src.map((x, i) => (
-                        <Cell key={i} fill={srcColors[x._id] || "#64748b"} />
-                      ))}
-                    </Pie>
-                    <Tooltip content={<Tip />} />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 8,
-                    marginTop: 12,
-                  }}
-                >
-                  {src.map((x) => (
-                    <div
-                      key={x._id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        fontSize: 13,
-                      }}
-                    >
+                  // ── Failed / unavailable subnet — show name + category + reason
+                  if (r.status === "failed") {
+                    return (
                       <div
+                        key={r._id}
+                        title={r.error || "Report unavailable"}
                         style={{
                           display: "flex",
                           alignItems: "center",
-                          gap: 8,
+                          gap: 16,
+                          padding: "18px 22px",
+                          borderBottom:
+                            i < arr.length - 1
+                              ? "1px solid var(--border)"
+                              : "none",
+                          background: "rgba(239,68,68,.04)",
                         }}
                       >
                         <div
                           style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: 2,
-                            background: srcColors[x._id] || "#64748b",
-                          }}
-                        />
-                        <span
-                          style={{
+                            width: 32,
+                            height: 32,
+                            borderRadius: 8,
+                            flexShrink: 0,
+                            background: "rgba(255,255,255,.04)",
+                            border: "1px solid var(--border)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 13,
+                            fontWeight: 700,
                             color: "var(--muted)",
-                            textTransform: "capitalize",
                           }}
                         >
-                          {x._id}
-                        </span>
+                          #{i + 1}
+                        </div>
+
+                        <div
+                          style={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: 11,
+                            flexShrink: 0,
+                            background: "rgba(239,68,68,.12)",
+                            border: "1px solid rgba(239,68,68,.35)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 14,
+                            fontWeight: 800,
+                            color: "#ef4444",
+                            fontFamily: "var(--mono)",
+                          }}
+                        >
+                          {r.subnetNumber}
+                        </div>
+
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontSize: 15,
+                              fontWeight: 700,
+                              marginBottom: 4,
+                            }}
+                          >
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 8,
+                                flexWrap: "wrap",
+                              }}
+                            >
+                              {displayName}
+                              {category && (
+                                <Badge color="purple">{category}</Badge>
+                              )}
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 13,
+                              fontWeight: 600,
+                              color: "#ef4444",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                            }}
+                          >
+                            <span>⚠</span>
+                            {friendlyError(r.error)}
+                          </div>
+                        </div>
+
+                        <Badge color="red">Unavailable</Badge>
                       </div>
-                      <span
+                    );
+                  }
+
+                  const rpt = r.report?.report || r.report || {};
+                  const score = rpt.investabilityScore;
+                  const description =
+                    meta?.description ||
+                    rpt.briefDescription ||
+                    rpt.oneLiner ||
+                    "No description available";
+
+                  return (
+                    <div
+                      key={r._id}
+                      onClick={() => setOpen(r)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 16,
+                        padding: "18px 22px",
+                        borderBottom:
+                          i < arr.length - 1
+                            ? "1px solid var(--border)"
+                            : "none",
+                        cursor: "pointer",
+                        transition: "background .12s",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background =
+                          "rgba(255,255,255,.025)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "transparent";
+                      }}
+                    >
+                      <div
                         style={{
-                          fontWeight: 600,
-                          fontFamily: "var(--mono)",
-                          fontSize: 12,
+                          width: 32,
+                          height: 32,
+                          borderRadius: 8,
+                          flexShrink: 0,
+                          background: "rgba(255,255,255,.04)",
+                          border: "1px solid var(--border)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 13,
+                          fontWeight: 700,
+                          color: "var(--muted)",
                         }}
                       >
-                        {x.count}
+                        #{i + 1}
+                      </div>
+
+                      <div
+                        style={{
+                          width: 44,
+                          height: 44,
+                          borderRadius: 11,
+                          flexShrink: 0,
+                          background: `${scoreColor(score)}18`,
+                          border: `1px solid ${scoreColor(score)}40`,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 14,
+                          fontWeight: 800,
+                          color: scoreColor(score),
+                          fontFamily: "var(--mono)",
+                        }}
+                      >
+                        {r.subnetNumber}
+                      </div>
+
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: 15,
+                            fontWeight: 700,
+                            marginBottom: 4,
+                          }}
+                        >
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            {displayName}
+                            {config?.category && <Badge color="purple">{config.category}</Badge>}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 13,
+                            color: "#94a3b8",
+                            lineHeight: 1.6,
+                            overflow: "hidden",
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                          }}
+                        >
+                          {description}
+                        </div>
+                      </div>
+
+                      {rpt.overallSentiment && (
+                        <span
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            padding: "3px 10px",
+                            borderRadius: 5,
+                            flexShrink: 0,
+                            background: `${sentColor(rpt.overallSentiment)}18`,
+                            color: sentColor(rpt.overallSentiment),
+                            border: `1px solid ${sentColor(rpt.overallSentiment)}35`,
+                          }}
+                        >
+                          {rpt.overallSentiment}
+                        </span>
+                      )}
+
+                      <ScoreRing score={score} size={52} />
+                      <span
+                        style={{
+                          color: "var(--muted)",
+                          fontSize: 16,
+                          flexShrink: 0,
+                        }}
+                      >
+                        →
                       </span>
                     </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </Card>
-      </div>
-
-      {/* {(s.topAuthors||[]).length>0 && (
-        <Card className="fu4">
-          <CardHeader title="Top Authors" action={<Badge color="gray">Top 10</Badge>}/>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)"}}>
-            {s.topAuthors.slice(0,10).map((a,i)=>(
-              <div key={a._id} style={{padding:"14px 20px",borderRight:i%5<4?"1px solid var(--border)":"none",borderBottom:i<5?"1px solid var(--border)":"none"}}>
-                <div style={{fontSize:13,fontWeight:600,marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a._id}</div>
-                <div style={{fontSize:14,color:"var(--accent)",fontFamily:"var(--mono)",fontWeight:600}}>{a.count}</div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )} */}
+                  );
+                })}
+            </Card>
+          </>
+        )
+      ) : tab === "leaderboard" ? (
+        <LeaderboardView />
+      ) : (
+        <ScheduleView />
+      )}
     </div>
   );
 }
+// ── OVERVIEW ─────────────────────────────────────────────────────────────────
+// function Overview() {
+//   const [data, setData] = useState(null);
+//   const [loading, setLoad] = useState(true);
+//   const [err, setErr] = useState("");
+
+//   useEffect(() => {
+//     Promise.all([api("/messages/stats"), api("/servers")])
+//       .then(([s, sv]) => setData({ s, sv }))
+//       .catch((e) => setErr(e.message))
+//       .finally(() => setLoad(false));
+//   }, []);
+
+//   if (loading)
+//     return (
+//       <div
+//         style={{ display: "flex", justifyContent: "center", paddingTop: 80 }}
+//       >
+//         <Spinner size={36} />
+//       </div>
+//     );
+//   if (err) return <ErrBox msg={err} />;
+
+//   const { s, sv } = data;
+//   const src = s.bySource || [];
+//   const srcColors = {
+//     discord: "#5865F2",
+//     github: "#3b82f6",
+//     twitter: "#06b6d4",
+//     other: "#64748b",
+//   };
+
+//   return (
+//     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+//       <div className="fu">
+//         <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
+//           Overview
+//         </h2>
+//         <p style={{ color: "var(--muted)", fontSize: 14 }}>
+//           All sources · all time
+//         </p>
+//       </div>
+
+//       <div
+//         style={{
+//           display: "grid",
+//           gridTemplateColumns: "repeat(4,1fr)",
+//           gap: 16,
+//         }}
+//       >
+//         {[
+//           {
+//             label: "Total Messages",
+//             val: s.total?.toLocaleString() || "0",
+//             sub: "all channels",
+//             icon: "💬",
+//             accent: true,
+//           },
+//           {
+//             label: "Servers",
+//             val: sv.length,
+//             sub: `${sv.filter((x) => x.scrapeEnabled).length} scraping`,
+//             icon: "🖥️",
+//           },
+//           // {label:"Top Author",val:s.topAuthors?.[0]?._id||"—",sub:s.topAuthors?.[0]?`${s.topAuthors[0].count} msgs`:"",icon:"👤"},
+//           {
+//             label: "Sources",
+//             val: src.length,
+//             sub: src.map((x) => x._id).join(", ") || "none",
+//             icon: "📡",
+//           },
+//         ].map((c, i) => (
+//           <div
+//             key={c.label}
+//             className={`fu${i + 1}`}
+//             style={{
+//               background: c.accent
+//                 ? "linear-gradient(135deg,rgba(59,130,246,.12),rgba(139,92,246,.08))"
+//                 : "var(--card)",
+//               border: `1px solid ${c.accent ? "rgba(59,130,246,.25)" : "var(--border)"}`,
+//               borderRadius: 16,
+//               padding: "20px 24px",
+//             }}
+//           >
+//             <div
+//               style={{
+//                 display: "flex",
+//                 justifyContent: "space-between",
+//                 alignItems: "center",
+//                 marginBottom: 6,
+//               }}
+//             >
+//               <span
+//                 style={{
+//                   fontSize: 11,
+//                   fontWeight: 600,
+//                   color: "var(--muted)",
+//                   textTransform: "uppercase",
+//                   letterSpacing: ".08em",
+//                 }}
+//               >
+//                 {c.label}
+//               </span>
+//               <span style={{ fontSize: 18, opacity: 0.6 }}>{c.icon}</span>
+//             </div>
+//             <div
+//               style={{
+//                 fontSize: 26,
+//                 fontWeight: 700,
+//                 color: c.accent ? "#93c5fd" : "var(--text)",
+//               }}
+//             >
+//               {c.val}
+//             </div>
+//             <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
+//               {c.sub}
+//             </div>
+//           </div>
+//         ))}
+//       </div>
+
+//       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
+//         <Card className="fu2">
+//           <CardHeader
+//             title="Daily Activity"
+//             action={<Badge color="blue">Last 30 days</Badge>}
+//           />
+//           <div style={{ padding: "20px 16px 16px" }}>
+//             {(s.byDay || []).length === 0 ? (
+//               <Empty msg="No activity yet — run a backfill" />
+//             ) : (
+//               <ResponsiveContainer width="100%" height={200}>
+//                 <AreaChart data={s.byDay}>
+//                   <defs>
+//                     <linearGradient id="ga" x1="0" y1="0" x2="0" y2="1">
+//                       <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+//                       <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+//                     </linearGradient>
+//                   </defs>
+//                   <CartesianGrid
+//                     strokeDasharray="3 3"
+//                     stroke="rgba(255,255,255,.04)"
+//                   />
+//                   <XAxis
+//                     dataKey="_id"
+//                     tick={{ fontSize: 11, fill: "#475569" }}
+//                     axisLine={false}
+//                     tickLine={false}
+//                   />
+//                   <YAxis
+//                     tick={{ fontSize: 11, fill: "#475569" }}
+//                     axisLine={false}
+//                     tickLine={false}
+//                   />
+//                   <Tooltip content={<Tip />} />
+//                   <Area
+//                     type="monotone"
+//                     dataKey="count"
+//                     name="Messages"
+//                     stroke="#3b82f6"
+//                     fill="url(#ga)"
+//                     strokeWidth={2}
+//                     dot={false}
+//                   />
+//                 </AreaChart>
+//               </ResponsiveContainer>
+//             )}
+//           </div>
+//         </Card>
+
+//         <Card className="fu3">
+//           <CardHeader title="By Source" />
+//           <div style={{ padding: 20 }}>
+//             {src.length === 0 ? (
+//               <Empty msg="No data" />
+//             ) : (
+//               <>
+//                 <ResponsiveContainer width="100%" height={120}>
+//                   <PieChart>
+//                     <Pie
+//                       data={src}
+//                       cx="50%"
+//                       cy="50%"
+//                       innerRadius={32}
+//                       outerRadius={52}
+//                       dataKey="count"
+//                       paddingAngle={4}
+//                     >
+//                       {src.map((x, i) => (
+//                         <Cell key={i} fill={srcColors[x._id] || "#64748b"} />
+//                       ))}
+//                     </Pie>
+//                     <Tooltip content={<Tip />} />
+//                   </PieChart>
+//                 </ResponsiveContainer>
+//                 <div
+//                   style={{
+//                     display: "flex",
+//                     flexDirection: "column",
+//                     gap: 8,
+//                     marginTop: 12,
+//                   }}
+//                 >
+//                   {src.map((x) => (
+//                     <div
+//                       key={x._id}
+//                       style={{
+//                         display: "flex",
+//                         alignItems: "center",
+//                         justifyContent: "space-between",
+//                         fontSize: 13,
+//                       }}
+//                     >
+//                       <div
+//                         style={{
+//                           display: "flex",
+//                           alignItems: "center",
+//                           gap: 8,
+//                         }}
+//                       >
+//                         <div
+//                           style={{
+//                             width: 8,
+//                             height: 8,
+//                             borderRadius: 2,
+//                             background: srcColors[x._id] || "#64748b",
+//                           }}
+//                         />
+//                         <span
+//                           style={{
+//                             color: "var(--muted)",
+//                             textTransform: "capitalize",
+//                           }}
+//                         >
+//                           {x._id}
+//                         </span>
+//                       </div>
+//                       <span
+//                         style={{
+//                           fontWeight: 600,
+//                           fontFamily: "var(--mono)",
+//                           fontSize: 12,
+//                         }}
+//                       >
+//                         {x.count}
+//                       </span>
+//                     </div>
+//                   ))}
+//                 </div>
+//               </>
+//             )}
+//           </div>
+//         </Card>
+//       </div>
+
+//       {/* {(s.topAuthors||[]).length>0 && (
+//         <Card className="fu4">
+//           <CardHeader title="Top Authors" action={<Badge color="gray">Top 10</Badge>}/>
+//           <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)"}}>
+//             {s.topAuthors.slice(0,10).map((a,i)=>(
+//               <div key={a._id} style={{padding:"14px 20px",borderRight:i%5<4?"1px solid var(--border)":"none",borderBottom:i<5?"1px solid var(--border)":"none"}}>
+//                 <div style={{fontSize:13,fontWeight:600,marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{a._id}</div>
+//                 <div style={{fontSize:14,color:"var(--accent)",fontFamily:"var(--mono)",fontWeight:600}}>{a.count}</div>
+//               </div>
+//             ))}
+//           </div>
+//         </Card>
+//       )} */}
+//     </div>
+//   );
+// }
 
 // ── SERVERS ──────────────────────────────────────────────────────────────────
+// Correct known server-name misspellings coming from Discord/DB for display.
+const cleanServerName = (name = "") =>
+  name.replace(/\bBit+ensor\b/gi, "Bittensor");
+
+// Subnet number from a channel name, e.g. "11--trajectory-rl" → 11; 9999 if none.
+const channelSubnetNum = (name = "") => {
+  const m = name.match(/^(\d+)/);
+  const n = m ? parseInt(m[1], 10) : 9999;
+  return n === 0 ? 9999 : n;
+};
+
 function Servers() {
   const [sv, setSv] = useState([]);
   const [ch, setCh] = useState([]);
+  const [configMap, setConfigMap] = useState({}); // subnet -> { name, category }
   const [sel, setSel] = useState(null);
   const [loading, setL] = useState(true);
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    Promise.all([api("/servers"), api("/channels")])
-      .then(([s, c]) => {
+    Promise.all([
+      api("/servers"),
+      api("/channels"),
+      api("/subnet-config").catch(() => []),
+    ])
+      .then(([s, c, cfg]) => {
         setSv(s);
         setCh(c);
+        const map = {};
+        for (const x of cfg) map[x.subnetNumber] = x;
+        setConfigMap(map);
         if (s.length) setSel(s[0].discordId);
       })
       .catch((e) => setErr(e.message))
@@ -1808,7 +4175,13 @@ function Servers() {
       </div>
     );
 
-  const scCh = ch.filter((c) => c.serverId === sel);
+  const scCh = ch
+    .filter((c) => c.serverId === sel)
+    .sort(
+      (a, b) =>
+        channelSubnetNum(a.name) - channelSubnetNum(b.name) ||
+        a.name.localeCompare(b.name),
+    );
 
   const Toggle = ({ on, onToggle }) => (
     <div
@@ -1900,11 +4273,11 @@ function Servers() {
                     <div
                       style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}
                     >
-                      {s.name}
+                      {cleanServerName(s.name)}
                     </div>
-                    <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                    {/* <div style={{ fontSize: 12, color: "var(--muted)" }}>
                       {s.memberCount?.toLocaleString()} members
-                    </div>
+                    </div> */}
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1928,7 +4301,7 @@ function Servers() {
           <CardHeader
             title={
               sel
-                ? `Channels — ${sv.find((s) => s.discordId === sel)?.name || ""}`
+                ? `Channels — ${cleanServerName(sv.find((s) => s.discordId === sel)?.name || "")}`
                 : "Channels"
             }
             action={
@@ -1942,40 +4315,118 @@ function Servers() {
           ) : scCh.length === 0 ? (
             <Empty msg="No channels" />
           ) : (
-            scCh.map((c, i) => (
-              <div
-                key={c.discordId}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "13px 20px",
-                  borderBottom:
-                    i < scCh.length - 1 ? "1px solid var(--border)" : "none",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ color: "var(--muted)", fontSize: 15 }}>#</span>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 500 }}>
-                      {c.name}
+            scCh.map((c, i) => {
+              const num = channelSubnetNum(c.name);
+              const isSubnet = num !== 9999;
+              const cfg = configMap[num];
+              const meta = SUBNET_META[num];
+              const displayName = isSubnet
+                ? cfg?.name ||
+                  meta?.name ||
+                  extractCleanName(c.name) ||
+                  c.name
+                : extractCleanName(c.name) || c.name;
+              const category = isSubnet ? cfg?.category || meta?.category : null;
+              return (
+                <div
+                  key={c.discordId}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "13px 20px",
+                    gap: 12,
+                    borderBottom:
+                      i < scCh.length - 1 ? "1px solid var(--border)" : "none",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      minWidth: 0,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 34,
+                        height: 34,
+                        borderRadius: 9,
+                        flexShrink: 0,
+                        background: isSubnet
+                          ? "rgba(59,130,246,.1)"
+                          : "rgba(255,255,255,.04)",
+                        border: isSubnet
+                          ? "1px solid rgba(59,130,246,.2)"
+                          : "1px solid var(--border)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: isSubnet ? 12 : 15,
+                        fontWeight: 700,
+                        color: isSubnet ? "#93c5fd" : "var(--muted)",
+                        fontFamily: "var(--mono)",
+                      }}
+                    >
+                      {isSubnet ? num : "#"}
                     </div>
-                    <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                      {(c.messageCount || 0).toLocaleString()} messages
+                    <div style={{ minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 600,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <span
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {displayName}
+                        </span>
+                        {category && (
+                          <Badge color="purple">{category}</Badge>
+                        )}
+                      </div>
+                      {isSubnet && (
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "var(--muted)",
+                            marginTop: 1,
+                          }}
+                        >
+                          Subnet {num}
+                        </div>
+                      )}
                     </div>
                   </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Badge color={c.scrapeEnabled ? "green" : "gray"}>
+                      {c.scrapeEnabled ? "Scraping" : "Off"}
+                    </Badge>
+                    <Toggle
+                      on={c.scrapeEnabled}
+                      onToggle={() => toggleCh(c.discordId, c.scrapeEnabled)}
+                    />
+                  </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <Badge color={c.scrapeEnabled ? "green" : "gray"}>
-                    {c.scrapeEnabled ? "Scraping" : "Off"}
-                  </Badge>
-                  <Toggle
-                    on={c.scrapeEnabled}
-                    onToggle={() => toggleCh(c.discordId, c.scrapeEnabled)}
-                  />
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </Card>
       </div>
@@ -2943,18 +5394,15 @@ function Analytics({ user }) {
                       AI Answer
                     </div>
                   </div>
-                  <div style={{ padding: "20px 22px" }}>
-                    <p
-                      style={{
-                        fontSize: 14,
-                        color: "#cbd5e1",
-                        lineHeight: 1.75,
-                        whiteSpace: "pre-wrap",
-                        margin: 0,
-                      }}
-                    >
-                      {result.answer}
-                    </p>
+                  <div
+                    style={{
+                      padding: "20px 22px",
+                      fontSize: 14,
+                      color: "#cbd5e1",
+                      lineHeight: 1.75,
+                    }}
+                  >
+                    <RichText text={result.answer} />
                   </div>
                 </Card>
               )}
@@ -3685,418 +6133,151 @@ function Analytics({ user }) {
   );
 }
 
-// ── SCRAPER JOBS ──────────────────────────────────────────────────────────────
-function ScraperJobs() {
-  const [jobs, setJobs] = useState([]);
-  const [chs, setChs] = useState([]);
-  const [form, setForm] = useState({
-    type: "channel",
-    id: "",
-    owner: "",
-    repo: "",
-  });
-  const [loading, setLoad] = useState(false);
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    api("/channels")
-      .then(setChs)
-      .catch(() => {});
-    api("/scraper/jobs")
-      .then(setJobs)
-      .catch(() => {});
-  }, []);
-
-  const start = async () => {
-    setLoad(true);
-    setErr("");
-    try {
-      let d;
-      if (form.type === "github")
-        d = await api("/scraper/github", {
-          method: "POST",
-          body: JSON.stringify({
-            owner: form.owner,
-            repo: form.repo,
-            includeComments: true,
-          }),
-        });
-      else if (form.type === "channel")
-        d = await api("/scraper/backfill/channel", {
-          method: "POST",
-          body: JSON.stringify({ channelId: form.id }),
-        });
-      else
-        d = await api("/scraper/backfill/server", {
-          method: "POST",
-          body: JSON.stringify({ serverId: form.id }),
-        });
-      setJobs((j) => [
-        {
-          id: d.jobId || `j${Date.now()}`,
-          status: "running",
-          channelId: form.id || `${form.owner}/${form.repo}`,
-          startedAt: new Date().toISOString(),
-        },
-        ...j,
-      ]);
-      setTimeout(
-        () =>
-          api("/scraper/jobs")
-            .then(setJobs)
-            .catch(() => {}),
-        5000,
-      );
-    } catch (e) {
-      setErr(e.message);
-    }
-    setLoad(false);
-  };
-
-  const SC = {
-    completed: { c: "green", i: "✓" },
-    running: { c: "blue", i: "↻" },
-    failed: { c: "red", i: "✕" },
-  };
-  const ago = (iso) => {
-    const d = Math.floor((Date.now() - new Date(iso)) / 6e4);
-    return d < 60 ? `${d}m ago` : `${Math.floor(d / 60)}h ago`;
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div className="fu">
-        <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
-          Scraper Jobs
-        </h2>
-        <p style={{ color: "var(--muted)", fontSize: 14 }}>
-          Trigger backfills and monitor progress
-        </p>
-      </div>
-
-      <Card className="fu1" style={{ padding: 24 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>
-          Start New Job
-        </div>
-        {err && (
-          <div style={{ marginBottom: 14 }}>
-            <ErrBox msg={err} />
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <select
-            value={form.type}
-            onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}
-            style={{ width: 180 }}
-          >
-            <option value="channel">Channel Backfill</option>
-            <option value="server">Server Backfill</option>
-            <option value="github">GitHub Import</option>
-          </select>
-          {form.type === "github" ? (
-            <>
-              <input
-                value={form.owner}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, owner: e.target.value }))
-                }
-                placeholder="GitHub owner"
-                style={{ width: 160 }}
-              />
-              <input
-                value={form.repo}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, repo: e.target.value }))
-                }
-                placeholder="Repo name"
-                style={{ width: 180 }}
-              />
-            </>
-          ) : (
-            <select
-              value={form.id}
-              onChange={(e) => setForm((f) => ({ ...f, id: e.target.value }))}
-              style={{ flex: 1 }}
-            >
-              <option value="">Select channel…</option>
-              {chs.map((c) => (
-                <option key={c.discordId} value={c.discordId}>
-                  #{c.name}
-                </option>
-              ))}
-            </select>
-          )}
-          <button
-            onClick={start}
-            disabled={loading}
-            style={{
-              padding: "10px 24px",
-              background: "linear-gradient(135deg,#3b82f6,#6366f1)",
-              color: "white",
-              borderRadius: 9,
-              fontSize: 14,
-              fontWeight: 600,
-              cursor: loading ? "not-allowed" : "pointer",
-              border: "none",
-              opacity: loading ? 0.7 : 1,
-              flexShrink: 0,
-            }}
-          >
-            {loading ? "Starting…" : "Start →"}
-          </button>
-        </div>
-      </Card>
-
-      <Card className="fu2" style={{ overflow: "hidden" }}>
-        <CardHeader
-          title="Recent Jobs"
-          action={
-            <button
-              onClick={() =>
-                api("/scraper/jobs")
-                  .then(setJobs)
-                  .catch(() => {})
-              }
-              style={{
-                background: "transparent",
-                color: "var(--muted)",
-                fontSize: 16,
-                cursor: "pointer",
-              }}
-            >
-              ↻
-            </button>
-          }
-        />
-        {jobs.length === 0 ? (
-          <Empty msg="No jobs yet — start a backfill above" />
-        ) : (
-          jobs.map((j, i) => {
-            const sc = SC[j.status] || SC.running;
-            return (
-              <div
-                key={j.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "15px 20px",
-                  borderBottom:
-                    i < jobs.length - 1 ? "1px solid var(--border)" : "none",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div
-                    style={{
-                      width: 34,
-                      height: 34,
-                      borderRadius: 9,
-                      background:
-                        j.status === "completed"
-                          ? "rgba(16,185,129,.12)"
-                          : j.status === "running"
-                            ? "rgba(59,130,246,.12)"
-                            : "rgba(239,68,68,.12)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 15,
-                      color:
-                        j.status === "completed"
-                          ? "var(--green)"
-                          : j.status === "running"
-                            ? "var(--accent)"
-                            : "var(--red)",
-                      animation:
-                        j.status === "running"
-                          ? "spin 1.5s linear infinite"
-                          : "none",
-                    }}
-                  >
-                    {sc.i}
-                  </div>
-                  <div>
-                    <div
-                      style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}
-                    >
-                      {j.channelId || j.serverId || j.id}
-                    </div>
-                    <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                      {j.count
-                        ? `${j.count.toLocaleString()} messages`
-                        : j.status === "running"
-                          ? "In progress…"
-                          : j.error || "Done"}
-                    </div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  {j.startedAt && (
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: "var(--muted)",
-                        fontFamily: "var(--mono)",
-                      }}
-                    >
-                      {ago(j.startedAt)}
-                    </span>
-                  )}
-                  <Badge color={sc.c}>{j.status}</Badge>
-                </div>
-              </div>
-            );
-          })
-        )}
-      </Card>
-    </div>
-  );
-}
 
 // ── SETTINGS ─────────────────────────────────────────────────────────────────
-function Settings() {
-  const [saved, setSaved] = useState(false);
-  const F = ({ label, type = "text", placeholder, defaultValue = "" }) => (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <label
-        style={{
-          fontSize: 12,
-          fontWeight: 600,
-          color: "var(--muted)",
-          textTransform: "uppercase",
-          letterSpacing: ".06em",
-        }}
-      >
-        {label}
-      </label>
-      <input
-        type={type}
-        defaultValue={defaultValue}
-        placeholder={placeholder}
-      />
-    </div>
-  );
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 20,
-        maxWidth: 620,
-      }}
-    >
-      <div className="fu">
-        <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
-          Settings
-        </h2>
-        <p style={{ color: "var(--muted)", fontSize: 14 }}>
-          API keys and configuration
-        </p>
-      </div>
-      {[
-        {
-          title: "Discord",
-          e: "🤖",
-          f: [
-            { label: "Bot Token", type: "password", placeholder: "MTxxxxxxx…" },
-          ],
-        },
-        {
-          title: "Groq AI",
-          e: "🧠",
-          f: [
-            { label: "API Key", type: "password", placeholder: "gsk_…" },
-            {
-              label: "Model",
-              placeholder: "llama-3.3-70b-versatile",
-              defaultValue: "llama-3.3-70b-versatile",
-            },
-          ],
-        },
-        {
-          title: "GitHub",
-          e: "🐙",
-          f: [
-            {
-              label: "Personal Access Token",
-              type: "password",
-              placeholder: "ghp_…",
-            },
-          ],
-        },
-      ].map((s, i) => (
-        <Card key={s.title} className={`fu${i + 1}`} style={{ padding: 24 }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              marginBottom: 20,
-            }}
-          >
-            <span style={{ fontSize: 20 }}>{s.e}</span>
-            <span style={{ fontSize: 15, fontWeight: 700 }}>{s.title}</span>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {s.f.map((f) => (
-              <F key={f.label} {...f} />
-            ))}
-          </div>
-        </Card>
-      ))}
-      <div
-        className="fu4"
-        style={{
-          padding: "16px 20px",
-          background: "rgba(59,130,246,.06)",
-          border: "1px solid rgba(59,130,246,.15)",
-          borderRadius: 12,
-        }}
-      >
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
-          ℹ️ Note
-        </div>
-        <p style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
-          Edit{" "}
-          <code
-            style={{
-              fontFamily: "var(--mono)",
-              background: "rgba(255,255,255,.06)",
-              padding: "1px 6px",
-              borderRadius: 4,
-            }}
-          >
-            backend/.env
-          </code>{" "}
-          directly and restart the server for changes to take effect.
-        </p>
-      </div>
-      <button
-        className="fu4"
-        onClick={() => {
-          setSaved(true);
-          setTimeout(() => setSaved(false), 2500);
-        }}
-        style={{
-          alignSelf: "flex-start",
-          padding: "12px 28px",
-          background: saved
-            ? "rgba(16,185,129,.2)"
-            : "linear-gradient(135deg,#3b82f6,#6366f1)",
-          border: saved ? "1px solid rgba(16,185,129,.4)" : "none",
-          color: saved ? "var(--green)" : "white",
-          borderRadius: 10,
-          fontSize: 14,
-          fontWeight: 600,
-          cursor: "pointer",
-          transition: "all .3s",
-        }}
-      >
-        {saved ? "✓ Saved!" : "Save Configuration"}
-      </button>
-    </div>
-  );
-}
+// function Settings() {
+//   const [saved, setSaved] = useState(false);
+//   const F = ({ label, type = "text", placeholder, defaultValue = "" }) => (
+//     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+//       <label
+//         style={{
+//           fontSize: 12,
+//           fontWeight: 600,
+//           color: "var(--muted)",
+//           textTransform: "uppercase",
+//           letterSpacing: ".06em",
+//         }}
+//       >
+//         {label}
+//       </label>
+//       <input
+//         type={type}
+//         defaultValue={defaultValue}
+//         placeholder={placeholder}
+//       />
+//     </div>
+//   );
+//   return (
+//     <div
+//       style={{
+//         display: "flex",
+//         flexDirection: "column",
+//         gap: 20,
+//         maxWidth: 620,
+//       }}
+//     >
+//       <div className="fu">
+//         <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
+//           Settings
+//         </h2>
+//         <p style={{ color: "var(--muted)", fontSize: 14 }}>
+//           API keys and configuration
+//         </p>
+//       </div>
+//       {[
+//         {
+//           title: "Discord",
+//           e: "🤖",
+//           f: [
+//             { label: "Bot Token", type: "password", placeholder: "MTxxxxxxx…" },
+//           ],
+//         },
+//         {
+//           title: "Groq AI",
+//           e: "🧠",
+//           f: [
+//             { label: "API Key", type: "password", placeholder: "gsk_…" },
+//             {
+//               label: "Model",
+//               placeholder: "llama-3.3-70b-versatile",
+//               defaultValue: "llama-3.3-70b-versatile",
+//             },
+//           ],
+//         },
+//         {
+//           title: "GitHub",
+//           e: "🐙",
+//           f: [
+//             {
+//               label: "Personal Access Token",
+//               type: "password",
+//               placeholder: "ghp_…",
+//             },
+//           ],
+//         },
+//       ].map((s, i) => (
+//         <Card key={s.title} className={`fu${i + 1}`} style={{ padding: 24 }}>
+//           <div
+//             style={{
+//               display: "flex",
+//               alignItems: "center",
+//               gap: 8,
+//               marginBottom: 20,
+//             }}
+//           >
+//             <span style={{ fontSize: 20 }}>{s.e}</span>
+//             <span style={{ fontSize: 15, fontWeight: 700 }}>{s.title}</span>
+//           </div>
+//           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+//             {s.f.map((f) => (
+//               <F key={f.label} {...f} />
+//             ))}
+//           </div>
+//         </Card>
+//       ))}
+//       <div
+//         className="fu4"
+//         style={{
+//           padding: "16px 20px",
+//           background: "rgba(59,130,246,.06)",
+//           border: "1px solid rgba(59,130,246,.15)",
+//           borderRadius: 12,
+//         }}
+//       >
+//         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+//           ℹ️ Note
+//         </div>
+//         <p style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
+//           Edit{" "}
+//           <code
+//             style={{
+//               fontFamily: "var(--mono)",
+//               background: "rgba(255,255,255,.06)",
+//               padding: "1px 6px",
+//               borderRadius: 4,
+//             }}
+//           >
+//             backend/.env
+//           </code>{" "}
+//           directly and restart the server for changes to take effect.
+//         </p>
+//       </div>
+//       <button
+//         className="fu4"
+//         onClick={() => {
+//           setSaved(true);
+//           setTimeout(() => setSaved(false), 2500);
+//         }}
+//         style={{
+//           alignSelf: "flex-start",
+//           padding: "12px 28px",
+//           background: saved
+//             ? "rgba(16,185,129,.2)"
+//             : "linear-gradient(135deg,#3b82f6,#6366f1)",
+//           border: saved ? "1px solid rgba(16,185,129,.4)" : "none",
+//           color: saved ? "var(--green)" : "white",
+//           borderRadius: 10,
+//           fontSize: 14,
+//           fontWeight: 600,
+//           cursor: "pointer",
+//           transition: "all .3s",
+//         }}
+//       >
+//         {saved ? "✓ Saved!" : "Save Configuration"}
+//       </button>
+//     </div>
+//   );
+// }
 
 // ── HISTORY PAGE ─────────────────────────────────────────────────────────────
 // Drop-in addition to your existing frontend file.
@@ -4107,84 +6288,105 @@ function Settings() {
 // 3. Paste this entire function into the file alongside the other page components.
 
 function History() {
-  const [timeline, setTimeline]   = useState([]);
-  const [topics, setTopics]       = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [err, setErr]             = useState("");
-  const [tab, setTab]             = useState("timeline");   // "timeline" | "topics"
-  const [expanded, setExpanded]   = useState(new Set());
-  const [detailItem, setDetail]   = useState(null);         // full detail modal
+  const [timeline, setTimeline] = useState([]);
+  const [topics, setTopics] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [tab, setTab] = useState("timeline"); // "timeline" | "topics"
+  const [expanded, setExpanded] = useState(new Set());
+  const [detailItem, setDetail] = useState(null); // full detail modal
   const [filterType, setFilterType] = useState("all");
-  const [search, setSearch]       = useState("");
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     Promise.all([
       api("/analytics/history/timeline?limit=200"),
       api("/analytics/history/topics"),
     ])
-      .then(([tl, tp]) => { setTimeline(tl); setTopics(tp); })
-      .catch(e => setErr(e.message))
+      .then(([tl, tp]) => {
+        setTimeline(tl);
+        setTopics(tp);
+      })
+      .catch((e) => setErr(e.message))
       .finally(() => setLoading(false));
   }, []);
 
   // ── helpers
-  const sentColor = s =>
-    s === "positive" ? "#10b981" :
-    s === "negative" ? "#ef4444" :
-    s === "mixed"    ? "#f59e0b" : "#64748b";
+  const sentColor = (s) =>
+    s === "positive"
+      ? "#10b981"
+      : s === "negative"
+        ? "#ef4444"
+        : s === "mixed"
+          ? "#f59e0b"
+          : "#64748b";
 
-  const typeIcon = t =>
-    t === "daily_summary"   ? "🧠" :
-    t === "trend_analysis"  ? "📈" :
-    t === "custom"          ? "💬" : "◎";
+  const typeIcon = (t) =>
+    t === "daily_summary"
+      ? "🧠"
+      : t === "trend_analysis"
+        ? "📈"
+        : t === "custom"
+          ? "💬"
+          : "◎";
 
-  const typeLabel = t =>
-    t === "daily_summary"  ? "Summary" :
-    t === "trend_analysis" ? "Trends"  :
-    t === "custom"         ? "Ask AI"  : t;
+  const typeLabel = (t) =>
+    t === "daily_summary"
+      ? "Summary"
+      : t === "trend_analysis"
+        ? "Trends"
+        : t === "custom"
+          ? "Ask AI"
+          : t;
 
-  const confidenceColor = c =>
-    c === "HIGH"   ? "#10b981" :
-    c === "MEDIUM" ? "#f59e0b" : "#64748b";
+  const confidenceColor = (c) =>
+    c === "HIGH" ? "#10b981" : c === "MEDIUM" ? "#f59e0b" : "#64748b";
 
-  const ago = iso => {
+  const ago = (iso) => {
     const d = Date.now() - new Date(iso).getTime();
     const h = Math.floor(d / 3.6e6);
     const days = Math.floor(h / 24);
-    if (days > 30) return `${Math.floor(days/30)}mo ago`;
-    if (days > 0)  return `${days}d ago`;
-    if (h > 0)     return `${h}h ago`;
-    return `${Math.floor(d/6e4)}m ago`;
+    if (days > 30) return `${Math.floor(days / 30)}mo ago`;
+    if (days > 0) return `${days}d ago`;
+    if (h > 0) return `${h}h ago`;
+    return `${Math.floor(d / 6e4)}m ago`;
   };
 
   // ── filter timeline items
-  const filteredTimeline = timeline.map(month => ({
-    ...month,
-    items: month.items.filter(item => {
-      if (filterType !== "all" && item.type !== filterType) return false;
-      if (search) {
-        const s = search.toLowerCase();
-        const inTopics = [...item.keyTopics, ...item.trendingTopics].some(t => t.toLowerCase().includes(s));
-        const inName   = item.targetName?.toLowerCase().includes(s);
-        const inSummary = (item.summary || "").toLowerCase().includes(s);
-        return inTopics || inName || inSummary;
-      }
-      return true;
-    })
-  })).filter(m => m.items.length > 0);
+  const filteredTimeline = timeline
+    .map((month) => ({
+      ...month,
+      items: month.items.filter((item) => {
+        if (filterType !== "all" && item.type !== filterType) return false;
+        if (search) {
+          const s = search.toLowerCase();
+          const inTopics = [...item.keyTopics, ...item.trendingTopics].some(
+            (t) => t.toLowerCase().includes(s),
+          );
+          const inName = item.targetName?.toLowerCase().includes(s);
+          const inSummary = (item.summary || "").toLowerCase().includes(s);
+          return inTopics || inName || inSummary;
+        }
+        return true;
+      }),
+    }))
+    .filter((m) => m.items.length > 0);
 
   // ── topic trend sparkline (simple bar)
   const Sparkline = ({ data }) => {
     if (!data?.length) return null;
-    const max = Math.max(...data.map(d => d.count), 1);
+    const max = Math.max(...data.map((d) => d.count), 1);
     return (
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 24 }}>
+      <div
+        style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 24 }}
+      >
         {data.slice(-12).map((d, i) => (
           <div
             key={i}
             title={`${d.month}: ${d.count}`}
             style={{
-              width: 6, borderRadius: 2,
+              width: 6,
+              borderRadius: 2,
               height: `${Math.max(3, (d.count / max) * 24)}px`,
               background: `rgba(59,130,246,${0.3 + (d.count / max) * 0.7})`,
               flexShrink: 0,
@@ -4200,95 +6402,211 @@ function History() {
     <div
       onClick={onClose}
       style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,.7)",
-        zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center",
-        backdropFilter: "blur(4px)", padding: 24,
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,.7)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        backdropFilter: "blur(4px)",
+        padding: 24,
       }}
     >
       <div
-        onClick={e => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
         style={{
-          background: "var(--card)", border: "1px solid var(--border)",
-          borderRadius: 20, width: "100%", maxWidth: 680,
-          maxHeight: "85vh", overflowY: "auto",
+          background: "var(--card)",
+          border: "1px solid var(--border)",
+          borderRadius: 20,
+          width: "100%",
+          maxWidth: 680,
+          maxHeight: "85vh",
+          overflowY: "auto",
         }}
       >
         {/* Modal header */}
-        <div style={{
-          padding: "18px 24px", borderBottom: "1px solid var(--border)",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          position: "sticky", top: 0, background: "var(--card)", zIndex: 1,
-          borderRadius: "20px 20px 0 0",
-        }}>
+        <div
+          style={{
+            padding: "18px 24px",
+            borderBottom: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            position: "sticky",
+            top: 0,
+            background: "var(--card)",
+            zIndex: 1,
+            borderRadius: "20px 20px 0 0",
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 20 }}>{typeIcon(item.type)}</span>
             <div>
-              <div style={{ fontSize: 15, fontWeight: 700 }}>{typeLabel(item.type)}</div>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>
+                {typeLabel(item.type)}
+              </div>
               <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                {item.targetName} · {new Date(item.generatedAt).toLocaleString()}
+                {item.targetName} ·{" "}
+                {new Date(item.generatedAt).toLocaleString()}
               </div>
             </div>
           </div>
           <button
             onClick={onClose}
-            style={{ background: "transparent", color: "var(--muted)", fontSize: 20, cursor: "pointer", border: "none", padding: 4 }}
-          >✕</button>
+            style={{
+              background: "transparent",
+              color: "var(--muted)",
+              fontSize: 20,
+              cursor: "pointer",
+              border: "none",
+              padding: 4,
+            }}
+          >
+            ✕
+          </button>
         </div>
 
-        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 20 }}>
-
+        <div
+          style={{
+            padding: "20px 24px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 20,
+          }}
+        >
           {/* Channels */}
           {item.channels?.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {item.channels.map(c => <Badge key={c} color="indigo">#{c}</Badge>)}
-              {item.messageCount > 0 && (
-                <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--muted)", fontFamily: "var(--mono)" }}>
-                  {item.messageCount.toLocaleString()} msgs
-                </span>
-              )}
+              {item.channels.map((c) => (
+                <Badge key={c} color="indigo">
+                  #{c}
+                </Badge>
+              ))}
+              
             </div>
           )}
 
           {/* Sentiment */}
           {item.sentiment && (
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 12, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".07em" }}>Sentiment</span>
-              <span style={{
-                padding: "3px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600,
-                background: `${sentColor(item.sentiment)}22`,
-                color: sentColor(item.sentiment),
-                border: `1px solid ${sentColor(item.sentiment)}44`,
-              }}>{item.sentiment}</span>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: "var(--muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: ".07em",
+                }}
+              >
+                Sentiment
+              </span>
+              <span
+                style={{
+                  padding: "3px 10px",
+                  borderRadius: 6,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  background: `${sentColor(item.sentiment)}22`,
+                  color: sentColor(item.sentiment),
+                  border: `1px solid ${sentColor(item.sentiment)}44`,
+                }}
+              >
+                {item.sentiment}
+              </span>
             </div>
           )}
 
           {/* Summary */}
           {item.summary && (
             <div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 10 }}>Summary</div>
-              {Array.isArray(item.summary)
-                ? item.summary.map((s, i) => (
-                    <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-                      <span style={{ color: "var(--accent)", flexShrink: 0, marginTop: 2 }}>•</span>
-                      <span style={{ fontSize: 13, color: "#cbd5e1", lineHeight: 1.6 }}>{s}</span>
-                    </div>
-                  ))
-                : <p style={{ fontSize: 13, color: "#cbd5e1", lineHeight: 1.7, margin: 0 }}>{item.summary}</p>
-              }
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "var(--muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: ".08em",
+                  marginBottom: 10,
+                }}
+              >
+                Summary
+              </div>
+              {Array.isArray(item.summary) ? (
+                item.summary.map((s, i) => (
+                  <div
+                    key={i}
+                    style={{ display: "flex", gap: 8, marginBottom: 6 }}
+                  >
+                    <span
+                      style={{
+                        color: "var(--accent)",
+                        flexShrink: 0,
+                        marginTop: 2,
+                      }}
+                    >
+                      •
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 13,
+                        color: "#cbd5e1",
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      {s}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <p
+                  style={{
+                    fontSize: 13,
+                    color: "#cbd5e1",
+                    lineHeight: 1.7,
+                    margin: 0,
+                  }}
+                >
+                  {item.summary}
+                </p>
+              )}
             </div>
           )}
 
           {/* Key Topics */}
-          {[...item.keyTopics, ...item.trendingTopics].filter(Boolean).length > 0 && (
+          {[...item.keyTopics, ...item.trendingTopics].filter(Boolean).length >
+            0 && (
             <div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 10 }}>Topics</div>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "var(--muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: ".08em",
+                  marginBottom: 10,
+                }}
+              >
+                Topics
+              </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {[...new Set([...item.keyTopics, ...item.trendingTopics])].map((t, i) => (
-                  <span key={i} style={{
-                    padding: "4px 11px", borderRadius: 6, fontSize: 12, fontWeight: 500,
-                    background: "rgba(59,130,246,.1)", border: "1px solid rgba(59,130,246,.2)", color: "#93c5fd"
-                  }}>{t}</span>
-                ))}
+                {[...new Set([...item.keyTopics, ...item.trendingTopics])].map(
+                  (t, i) => (
+                    <span
+                      key={i}
+                      style={{
+                        padding: "4px 11px",
+                        borderRadius: 6,
+                        fontSize: 12,
+                        fontWeight: 500,
+                        background: "rgba(59,130,246,.1)",
+                        border: "1px solid rgba(59,130,246,.2)",
+                        color: "#93c5fd",
+                      }}
+                    >
+                      {t}
+                    </span>
+                  ),
+                )}
               </div>
             </div>
           )}
@@ -4296,26 +6614,86 @@ function History() {
           {/* Emerging Signals */}
           {item.emergingSignals?.length > 0 && (
             <div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 10 }}>Emerging Signals</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "var(--muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: ".08em",
+                  marginBottom: 10,
+                }}
+              >
+                Emerging Signals
+              </div>
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 10 }}
+              >
                 {item.emergingSignals.map((s, i) => (
-                  <div key={i} style={{
-                    padding: "12px 14px", borderRadius: 10,
-                    background: "rgba(255,255,255,.03)", border: "1px solid var(--border)",
-                  }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0" }}>{s.signal}</span>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
-                        background: `${confidenceColor(s.confidence)}22`,
-                        color: confidenceColor(s.confidence),
-                        border: `1px solid ${confidenceColor(s.confidence)}44`,
-                        textTransform: "uppercase", letterSpacing: ".06em",
-                      }}>{s.confidence}</span>
+                  <div
+                    key={i}
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 10,
+                      background: "rgba(255,255,255,.03)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        marginBottom: 6,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: "#e2e8f0",
+                        }}
+                      >
+                        {s.signal}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          padding: "2px 7px",
+                          borderRadius: 4,
+                          background: `${confidenceColor(s.confidence)}22`,
+                          color: confidenceColor(s.confidence),
+                          border: `1px solid ${confidenceColor(s.confidence)}44`,
+                          textTransform: "uppercase",
+                          letterSpacing: ".06em",
+                        }}
+                      >
+                        {s.confidence}
+                      </span>
                     </div>
-                    {s.description && <p style={{ fontSize: 12, color: "#94a3b8", margin: "0 0 4px", lineHeight: 1.5 }}>{s.description}</p>}
+                    {s.description && (
+                      <p
+                        style={{
+                          fontSize: 12,
+                          color: "#94a3b8",
+                          margin: "0 0 4px",
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {s.description}
+                      </p>
+                    )}
                     {s.evidence && (
-                      <div style={{ fontSize: 11, color: "var(--dim)", fontStyle: "italic", borderLeft: "2px solid var(--border)", paddingLeft: 8 }}>
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "var(--dim)",
+                          fontStyle: "italic",
+                          borderLeft: "2px solid var(--border)",
+                          paddingLeft: 8,
+                        }}
+                      >
                         "{s.evidence}"
                       </div>
                     )}
@@ -4328,11 +6706,37 @@ function History() {
           {/* Highlights */}
           {item.highlights?.length > 0 && (
             <div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 10 }}>Key Insights</div>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "var(--muted)",
+                  textTransform: "uppercase",
+                  letterSpacing: ".08em",
+                  marginBottom: 10,
+                }}
+              >
+                Key Insights
+              </div>
               {item.highlights.map((h, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-                  <span style={{ color: "var(--green)", flexShrink: 0, marginTop: 2 }}>◆</span>
-                  <span style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.55 }}>{h}</span>
+                <div
+                  key={i}
+                  style={{ display: "flex", gap: 8, marginBottom: 6 }}
+                >
+                  <span
+                    style={{
+                      color: "var(--green)",
+                      flexShrink: 0,
+                      marginTop: 2,
+                    }}
+                  >
+                    ◆
+                  </span>
+                  <span
+                    style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.55 }}
+                  >
+                    {h}
+                  </span>
                 </div>
               ))}
             </div>
@@ -4345,150 +6749,357 @@ function History() {
   // ── TIMELINE TAB ────────────────────────────────────────────────────────────
   const TimelineTab = () => (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
-      {filteredTimeline.length === 0
-        ? <Empty msg="No analyses match your filters" />
-        : filteredTimeline.map((month, mi) => (
+      {filteredTimeline.length === 0 ? (
+        <Empty msg="No analyses match your filters" />
+      ) : (
+        filteredTimeline.map((month, mi) => (
           <div key={month.month}>
             {/* Month header */}
-            <div style={{
-              display: "flex", alignItems: "center", gap: 14, marginBottom: 16,
-            }}>
-              <div style={{
-                padding: "6px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700,
-                background: "linear-gradient(135deg,rgba(59,130,246,.15),rgba(139,92,246,.1))",
-                border: "1px solid rgba(59,130,246,.25)", color: "#93c5fd",
-              }}>{month.label}</div>
-              <div style={{ height: 1, flex: 1, background: "var(--border)" }} />
-              <span style={{ fontSize: 12, color: "var(--muted)", fontFamily: "var(--mono)" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 14,
+                marginBottom: 16,
+              }}
+            >
+              <div
+                style={{
+                  padding: "6px 16px",
+                  borderRadius: 8,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  background:
+                    "linear-gradient(135deg,rgba(59,130,246,.15),rgba(139,92,246,.1))",
+                  border: "1px solid rgba(59,130,246,.25)",
+                  color: "#93c5fd",
+                }}
+              >
+                {month.label}
+              </div>
+              <div
+                style={{ height: 1, flex: 1, background: "var(--border)" }}
+              />
+              <span
+                style={{
+                  fontSize: 12,
+                  color: "var(--muted)",
+                  fontFamily: "var(--mono)",
+                }}
+              >
                 {month.count} {month.count === 1 ? "analysis" : "analyses"}
               </span>
             </div>
 
             {/* Items in this month */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingLeft: 16, borderLeft: "2px solid var(--border)" }}>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                paddingLeft: 16,
+                borderLeft: "2px solid var(--border)",
+              }}
+            >
               {month.items.map((item, ii) => {
-                const allTopics = [...new Set([...item.keyTopics, ...item.trendingTopics])];
+                const allTopics = [
+                  ...new Set([...item.keyTopics, ...item.trendingTopics]),
+                ];
                 const isExpanded = expanded.has(item._id);
 
                 return (
                   <div
                     key={item._id}
                     style={{
-                      background: "var(--card)", border: "1px solid var(--border)",
-                      borderRadius: 14, overflow: "hidden",
+                      background: "var(--card)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 14,
+                      overflow: "hidden",
                       transition: "border-color .15s",
                     }}
-                    onMouseEnter={e => e.currentTarget.style.borderColor = "rgba(59,130,246,.3)"}
-                    onMouseLeave={e => e.currentTarget.style.borderColor = "var(--border)"}
+                    onMouseEnter={(e) =>
+                      (e.currentTarget.style.borderColor =
+                        "rgba(59,130,246,.3)")
+                    }
+                    onMouseLeave={(e) =>
+                      (e.currentTarget.style.borderColor = "var(--border)")
+                    }
                   >
                     {/* Item header row */}
                     <div
-                      onClick={() => setExpanded(prev => {
-                        const n = new Set(prev);
-                        n.has(item._id) ? n.delete(item._id) : n.add(item._id);
-                        return n;
-                      })}
+                      onClick={() =>
+                        setExpanded((prev) => {
+                          const n = new Set(prev);
+                          n.has(item._id)
+                            ? n.delete(item._id)
+                            : n.add(item._id);
+                          return n;
+                        })
+                      }
                       style={{
-                        padding: "14px 18px", display: "flex", alignItems: "center",
-                        gap: 12, cursor: "pointer",
+                        padding: "14px 18px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        cursor: "pointer",
                       }}
                     >
                       {/* Type icon */}
-                      <div style={{
-                        width: 34, height: 34, borderRadius: 9, flexShrink: 0,
-                        background: "rgba(59,130,246,.08)", border: "1px solid rgba(59,130,246,.15)",
-                        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15,
-                      }}>{typeIcon(item.type)}</div>
+                      <div
+                        style={{
+                          width: 34,
+                          height: 34,
+                          borderRadius: 9,
+                          flexShrink: 0,
+                          background: "rgba(59,130,246,.08)",
+                          border: "1px solid rgba(59,130,246,.15)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 15,
+                        }}
+                      >
+                        {typeIcon(item.type)}
+                      </div>
 
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            marginBottom: 4,
+                            flexWrap: "wrap",
+                          }}
+                        >
                           <Badge color="blue">{typeLabel(item.type)}</Badge>
                           {item.sentiment && (
-                            <span style={{
-                              fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 5,
-                              background: `${sentColor(item.sentiment)}18`,
-                              color: sentColor(item.sentiment),
-                              border: `1px solid ${sentColor(item.sentiment)}35`,
-                            }}>{item.sentiment}</span>
+                            <span
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                padding: "2px 8px",
+                                borderRadius: 5,
+                                background: `${sentColor(item.sentiment)}18`,
+                                color: sentColor(item.sentiment),
+                                border: `1px solid ${sentColor(item.sentiment)}35`,
+                              }}
+                            >
+                              {item.sentiment}
+                            </span>
                           )}
                           {item.channels?.length > 0 && (
-                            <span style={{ fontSize: 12, color: "var(--muted)" }}>
-                              {item.channels.slice(0, 3).map(c => `#${c}`).join(", ")}
-                              {item.channels.length > 3 ? ` +${item.channels.length - 3}` : ""}
+                            <span
+                              style={{ fontSize: 12, color: "var(--muted)" }}
+                            >
+                              {item.channels
+                                .slice(0, 3)
+                                .map((c) => `#${c}`)
+                                .join(", ")}
+                              {item.channels.length > 3
+                                ? ` +${item.channels.length - 3}`
+                                : ""}
                             </span>
                           )}
                         </div>
                         {/* Topic chips preview */}
                         {allTopics.length > 0 && (
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              gap: 4,
+                            }}
+                          >
                             {allTopics.slice(0, 5).map((t, i) => (
-                              <span key={i} style={{
-                                fontSize: 11, padding: "2px 8px", borderRadius: 4,
-                                background: "rgba(255,255,255,.05)", border: "1px solid var(--border)",
-                                color: "var(--muted)",
-                              }}>{t}</span>
+                              <span
+                                key={i}
+                                style={{
+                                  fontSize: 11,
+                                  padding: "2px 8px",
+                                  borderRadius: 4,
+                                  background: "rgba(255,255,255,.05)",
+                                  border: "1px solid var(--border)",
+                                  color: "var(--muted)",
+                                }}
+                              >
+                                {t}
+                              </span>
                             ))}
                             {allTopics.length > 5 && (
-                              <span style={{ fontSize: 11, color: "var(--dim)" }}>+{allTopics.length - 5} more</span>
+                              <span
+                                style={{ fontSize: 11, color: "var(--dim)" }}
+                              >
+                                +{allTopics.length - 5} more
+                              </span>
                             )}
                           </div>
                         )}
                       </div>
 
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          flexShrink: 0,
+                        }}
+                      >
                         {item.messageCount > 0 && (
-                          <span style={{ fontSize: 11, color: "var(--dim)", fontFamily: "var(--mono)" }}>
+                          <span
+                            style={{
+                              fontSize: 11,
+                              color: "var(--dim)",
+                              fontFamily: "var(--mono)",
+                            }}
+                          >
                             {item.messageCount.toLocaleString()} msgs
                           </span>
                         )}
-                        <span style={{ fontSize: 11, color: "var(--dim)" }}>{ago(item.generatedAt)}</span>
+                        <span style={{ fontSize: 11, color: "var(--dim)" }}>
+                          {ago(item.generatedAt)}
+                        </span>
                         {/* View detail button */}
                         <button
-                          onClick={e => { e.stopPropagation(); setDetail(item); }}
-                          style={{
-                            padding: "5px 12px", background: "rgba(59,130,246,.1)",
-                            border: "1px solid rgba(59,130,246,.2)", borderRadius: 7,
-                            color: "#93c5fd", fontSize: 12, cursor: "pointer", fontFamily: "var(--font)",
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDetail(item);
                           }}
-                        >View →</button>
-                        <span style={{ color: "var(--muted)", fontSize: 14, transition: "transform .2s", transform: isExpanded ? "rotate(180deg)" : "none" }}>▾</span>
+                          style={{
+                            padding: "5px 12px",
+                            background: "rgba(59,130,246,.1)",
+                            border: "1px solid rgba(59,130,246,.2)",
+                            borderRadius: 7,
+                            color: "#93c5fd",
+                            fontSize: 12,
+                            cursor: "pointer",
+                            fontFamily: "var(--font)",
+                          }}
+                        >
+                          View →
+                        </button>
+                        <span
+                          style={{
+                            color: "var(--muted)",
+                            fontSize: 14,
+                            transition: "transform .2s",
+                            transform: isExpanded ? "rotate(180deg)" : "none",
+                          }}
+                        >
+                          ▾
+                        </span>
                       </div>
                     </div>
 
                     {/* Expanded content */}
                     {isExpanded && (
-                      <div style={{ padding: "0 18px 16px", borderTop: "1px solid var(--border)" }}>
+                      <div
+                        style={{
+                          padding: "0 18px 16px",
+                          borderTop: "1px solid var(--border)",
+                        }}
+                      >
                         {/* Summary */}
                         {item.summary && (
                           <div style={{ paddingTop: 14 }}>
-                            {Array.isArray(item.summary)
-                              ? item.summary.slice(0, 3).map((s, i) => (
-                                  <div key={i} style={{ display: "flex", gap: 8, marginBottom: 5 }}>
-                                    <span style={{ color: "var(--accent)", flexShrink: 0 }}>•</span>
-                                    <span style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.55 }}>{s}</span>
-                                  </div>
-                                ))
-                              : <p style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.6, margin: 0 }}>
-                                  {typeof item.summary === "string" ? item.summary.substring(0, 300) + (item.summary.length > 300 ? "…" : "") : ""}
-                                </p>
-                            }
+                            {Array.isArray(item.summary) ? (
+                              item.summary.slice(0, 3).map((s, i) => (
+                                <div
+                                  key={i}
+                                  style={{
+                                    display: "flex",
+                                    gap: 8,
+                                    marginBottom: 5,
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      color: "var(--accent)",
+                                      flexShrink: 0,
+                                    }}
+                                  >
+                                    •
+                                  </span>
+                                  <span
+                                    style={{
+                                      fontSize: 13,
+                                      color: "#94a3b8",
+                                      lineHeight: 1.55,
+                                    }}
+                                  >
+                                    {s}
+                                  </span>
+                                </div>
+                              ))
+                            ) : (
+                              <p
+                                style={{
+                                  fontSize: 13,
+                                  color: "#94a3b8",
+                                  lineHeight: 1.6,
+                                  margin: 0,
+                                }}
+                              >
+                                {typeof item.summary === "string"
+                                  ? item.summary.substring(0, 300) +
+                                    (item.summary.length > 300 ? "…" : "")
+                                  : ""}
+                              </p>
+                            )}
                           </div>
                         )}
 
                         {/* Emerging signals preview */}
                         {item.emergingSignals?.length > 0 && (
-                          <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
-                            <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".07em", marginBottom: 4 }}>Signals</div>
+                          <div
+                            style={{
+                              marginTop: 12,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 6,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--muted)",
+                                textTransform: "uppercase",
+                                letterSpacing: ".07em",
+                                marginBottom: 4,
+                              }}
+                            >
+                              Signals
+                            </div>
                             {item.emergingSignals.slice(0, 3).map((s, i) => (
-                              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                <span style={{
-                                  fontSize: 10, padding: "1px 6px", borderRadius: 4, fontWeight: 700,
-                                  background: `${confidenceColor(s.confidence)}22`,
-                                  color: confidenceColor(s.confidence),
-                                  border: `1px solid ${confidenceColor(s.confidence)}44`,
-                                  textTransform: "uppercase", letterSpacing: ".05em", flexShrink: 0,
-                                }}>{s.confidence}</span>
-                                <span style={{ fontSize: 12, color: "#94a3b8" }}>{s.signal}</span>
+                              <div
+                                key={i}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    padding: "1px 6px",
+                                    borderRadius: 4,
+                                    fontWeight: 700,
+                                    background: `${confidenceColor(s.confidence)}22`,
+                                    color: confidenceColor(s.confidence),
+                                    border: `1px solid ${confidenceColor(s.confidence)}44`,
+                                    textTransform: "uppercase",
+                                    letterSpacing: ".05em",
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {s.confidence}
+                                </span>
+                                <span
+                                  style={{ fontSize: 12, color: "#94a3b8" }}
+                                >
+                                  {s.signal}
+                                </span>
                               </div>
                             ))}
                           </div>
@@ -4501,76 +7112,111 @@ function History() {
             </div>
           </div>
         ))
-      }
+      )}
     </div>
   );
 
   // ── TOPICS TAB ──────────────────────────────────────────────────────────────
   const TopicsTab = () => {
     const [topicSearch, setTopicSearch] = useState("");
-    const filtered = topics.filter(t =>
-      !topicSearch || t.label.toLowerCase().includes(topicSearch.toLowerCase())
+    const filtered = topics.filter(
+      (t) =>
+        !topicSearch ||
+        t.label.toLowerCase().includes(topicSearch.toLowerCase()),
     );
 
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <input
           value={topicSearch}
-          onChange={e => setTopicSearch(e.target.value)}
+          onChange={(e) => setTopicSearch(e.target.value)}
           placeholder="Search topics…"
           style={{ maxWidth: 320 }}
         />
 
-        {filtered.length === 0
-          ? <Empty msg="No topics found" />
-          : (
-            <Card style={{ overflow: "hidden" }}>
-              <CardHeader
-                title="Topic Frequency Over Time"
-                action={<Badge color="gray">{filtered.length} topics</Badge>}
-              />
-              {filtered.map((topic, i) => (
+        {filtered.length === 0 ? (
+          <Empty msg="No topics found" />
+        ) : (
+          <Card style={{ overflow: "hidden" }}>
+            <CardHeader
+              title="Topic Frequency Over Time"
+              action={<Badge color="gray">{filtered.length} topics</Badge>}
+            />
+            {filtered.map((topic, i) => (
+              <div
+                key={i}
+                style={{
+                  padding: "14px 20px",
+                  borderBottom:
+                    i < filtered.length - 1
+                      ? "1px solid var(--border)"
+                      : "none",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 16,
+                }}
+              >
+                {/* Rank */}
                 <div
-                  key={i}
                   style={{
-                    padding: "14px 20px",
-                    borderBottom: i < filtered.length - 1 ? "1px solid var(--border)" : "none",
-                    display: "flex", alignItems: "center", gap: 16,
+                    width: 28,
+                    height: 28,
+                    borderRadius: 7,
+                    flexShrink: 0,
+                    background:
+                      i < 3 ? "rgba(59,130,246,.15)" : "rgba(255,255,255,.04)",
+                    border: `1px solid ${i < 3 ? "rgba(59,130,246,.3)" : "var(--border)"}`,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: i < 3 ? "#93c5fd" : "var(--muted)",
                   }}
                 >
-                  {/* Rank */}
-                  <div style={{
-                    width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-                    background: i < 3 ? "rgba(59,130,246,.15)" : "rgba(255,255,255,.04)",
-                    border: `1px solid ${i < 3 ? "rgba(59,130,246,.3)" : "var(--border)"}`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 12, fontWeight: 700,
-                    color: i < 3 ? "#93c5fd" : "var(--muted)",
-                  }}>#{i + 1}</div>
-
-                  {/* Topic name */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {topic.label}
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                      Appeared in {topic.monthlyData.length} month{topic.monthlyData.length !== 1 ? "s" : ""}
-                    </div>
-                  </div>
-
-                  {/* Sparkline */}
-                  <Sparkline data={topic.monthlyData} />
-
-                  {/* Count */}
-                  <div style={{
-                    fontSize: 18, fontWeight: 700, fontFamily: "var(--mono)",
-                    color: "#93c5fd", minWidth: 32, textAlign: "right",
-                  }}>{topic.totalCount}</div>
+                  #{i + 1}
                 </div>
-              ))}
-            </Card>
-          )
-        }
+
+                {/* Topic name */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 500,
+                      marginBottom: 4,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {topic.label}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                    Appeared in {topic.monthlyData.length} month
+                    {topic.monthlyData.length !== 1 ? "s" : ""}
+                  </div>
+                </div>
+
+                {/* Sparkline */}
+                <Sparkline data={topic.monthlyData} />
+
+                {/* Count */}
+                <div
+                  style={{
+                    fontSize: 18,
+                    fontWeight: 700,
+                    fontFamily: "var(--mono)",
+                    color: "#93c5fd",
+                    minWidth: 32,
+                    textAlign: "right",
+                  }}
+                >
+                  {topic.totalCount}
+                </div>
+              </div>
+            ))}
+          </Card>
+        )}
       </div>
     );
   };
@@ -4578,75 +7224,185 @@ function History() {
   // ── RENDER ──────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-
-      {detailItem && <DetailModal item={detailItem} onClose={() => setDetail(null)} />}
+      {detailItem && (
+        <DetailModal item={detailItem} onClose={() => setDetail(null)} />
+      )}
 
       {/* Header */}
-      <div className="fu" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
+      <div
+        className="fu"
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+        }}
+      >
         <div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>Analysis History</h2>
+          <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>
+            Analysis History
+          </h2>
           <p style={{ color: "var(--muted)", fontSize: 14 }}>
-            Track discussions over time · {timeline.reduce((s, m) => s + m.count, 0)} total analyses
+            Track discussions over time ·{" "}
+            {timeline.reduce((s, m) => s + m.count, 0)} total analyses
           </p>
         </div>
-        <div style={{ display: "flex", gap: 3, background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: 4 }}>
-          {[["timeline", "◷ Timeline"], ["topics", "◈ Topics"]].map(([t, label]) => (
-            <button key={t} onClick={() => setTab(t)} style={{
-              padding: "7px 18px", borderRadius: 7, fontSize: 13, fontWeight: 500, cursor: "pointer",
-              background: tab === t ? "rgba(59,130,246,.2)" : "transparent",
-              color: tab === t ? "#93c5fd" : "var(--muted)",
-              border: tab === t ? "1px solid rgba(59,130,246,.3)" : "1px solid transparent",
-              transition: "all .15s", fontFamily: "var(--font)",
-            }}>{label}</button>
+        <div
+          style={{
+            display: "flex",
+            gap: 3,
+            background: "var(--card)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 4,
+          }}
+        >
+          {[
+            ["timeline", "◷ Timeline"],
+            ["topics", "◈ Topics"],
+          ].map(([t, label]) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                padding: "7px 18px",
+                borderRadius: 7,
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: "pointer",
+                background: tab === t ? "rgba(59,130,246,.2)" : "transparent",
+                color: tab === t ? "#93c5fd" : "var(--muted)",
+                border:
+                  tab === t
+                    ? "1px solid rgba(59,130,246,.3)"
+                    : "1px solid transparent",
+                transition: "all .15s",
+                fontFamily: "var(--font)",
+              }}
+            >
+              {label}
+            </button>
           ))}
         </div>
       </div>
 
       {/* Filters — only on timeline tab */}
       {tab === "timeline" && (
-        <div className="fu1" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <div
+          className="fu1"
+          style={{ display: "flex", gap: 10, flexWrap: "wrap" }}
+        >
           <div style={{ flex: 1, position: "relative", minWidth: 200 }}>
-            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "var(--muted)" }}>⌕</span>
+            <span
+              style={{
+                position: "absolute",
+                left: 12,
+                top: "50%",
+                transform: "translateY(-50%)",
+                color: "var(--muted)",
+              }}
+            >
+              ⌕
+            </span>
             <input
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               placeholder="Search topics, channels, summaries…"
               style={{ paddingLeft: 36 }}
             />
           </div>
-          <select value={filterType} onChange={e => setFilterType(e.target.value)} style={{ width: 160 }}>
+          <select
+            value={filterType}
+            onChange={(e) => setFilterType(e.target.value)}
+            style={{ width: 160 }}
+          >
             <option value="all">All Types</option>
             <option value="daily_summary">Summary</option>
             <option value="trend_analysis">Trends</option>
             <option value="custom">Ask AI</option>
           </select>
           <button
-            onClick={() => { setSearch(""); setFilterType("all"); }}
-            style={{ padding: "10px 16px", background: "transparent", border: "1px solid var(--border)", borderRadius: 8, color: "var(--muted)", fontSize: 13, cursor: "pointer" }}
-          >Clear</button>
+            onClick={() => {
+              setSearch("");
+              setFilterType("all");
+            }}
+            style={{
+              padding: "10px 16px",
+              background: "transparent",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              color: "var(--muted)",
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            Clear
+          </button>
         </div>
       )}
 
       {/* Stats row */}
       {!loading && tab === "timeline" && (
-        <div className="fu2" style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+        <div
+          className="fu2"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4,1fr)",
+            gap: 12,
+          }}
+        >
           {[
-            { label: "Total Analyses",  val: timeline.reduce((s, m) => s + m.count, 0), icon: "◎" },
-            { label: "Months Tracked",  val: timeline.length, icon: "◷" },
+            {
+              label: "Total Analyses",
+              val: timeline.reduce((s, m) => s + m.count, 0),
+              icon: "◎",
+            },
+            { label: "Months Tracked", val: timeline.length, icon: "◷" },
             { label: "Topics Extracted", val: topics.length, icon: "◈" },
-            { label: "Latest",
+            {
+              label: "Latest",
               val: timeline[0]?.label || "—",
-              icon: "◆", small: true },
+              icon: "◆",
+              small: true,
+            },
           ].map((c, i) => (
-            <div key={i} style={{
-              background: "var(--card)", border: "1px solid var(--border)",
-              borderRadius: 12, padding: "14px 18px",
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".07em" }}>{c.label}</span>
-                <span style={{ opacity: .4 }}>{c.icon}</span>
+            <div
+              key={i}
+              style={{
+                background: "var(--card)",
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                padding: "14px 18px",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  marginBottom: 4,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: "var(--muted)",
+                    textTransform: "uppercase",
+                    letterSpacing: ".07em",
+                  }}
+                >
+                  {c.label}
+                </span>
+                <span style={{ opacity: 0.4 }}>{c.icon}</span>
               </div>
-              <div style={{ fontSize: c.small ? 14 : 22, fontWeight: 700, color: "#93c5fd" }}>{c.val}</div>
+              <div
+                style={{
+                  fontSize: c.small ? 14 : 22,
+                  fontWeight: 700,
+                  color: "#93c5fd",
+                }}
+              >
+                {c.val}
+              </div>
             </div>
           ))}
         </div>
@@ -4654,15 +7410,20 @@ function History() {
 
       {err && <ErrBox msg={err} />}
 
-      {loading
-        ? <div style={{ display: "flex", justifyContent: "center", paddingTop: 60 }}><Spinner size={36} /></div>
-        : tab === "timeline" ? <TimelineTab /> : <TopicsTab />
-      }
+      {loading ? (
+        <div
+          style={{ display: "flex", justifyContent: "center", paddingTop: 60 }}
+        >
+          <Spinner size={36} />
+        </div>
+      ) : tab === "timeline" ? (
+        <TimelineTab />
+      ) : (
+        <TopicsTab />
+      )}
     </div>
   );
 }
-
-
 
 // ── APP ───────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -4683,16 +7444,14 @@ export default function App() {
     );
   // AFTER
   const PAGES = {
-    overview: Overview,
+    // overview: Overview,
     servers: Servers,
     analytics: Analytics,
-    scraper: ScraperJobs,
-    settings: Settings,
+    settings: SubnetSettings,
     history: History,
     subnets: SubnetIntel,
-
   };
-  const Page = PAGES[page] || Overview;
+  const Page = PAGES[page] || SubnetIntel;
 
   return (
     <>
