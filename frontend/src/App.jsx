@@ -66,7 +66,7 @@ async function api(path, opts = {}) {
     },
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Request failed");
+  if (!res.ok) throw new Error(data.message || data.error || "Request failed");
   return data;
 }
 
@@ -507,7 +507,7 @@ const NAV = [
   { id: "servers", icon: "◈", label: "Servers" },
   { id: "analytics", icon: "◆", label: "AI Insights" },
   { id: "settings", icon: "◐", label: "Subnet Settings" },   // ← uncommented
-  { id: "history", icon: "◷", label: "History" },
+  // { id: "history", icon: "◷", label: "History" },
 ];
 
 function Sidebar({ active, onNav, user, onLogout }) {
@@ -1641,6 +1641,14 @@ function SubnetIntel() {
       : rpt.raiseTo9
       ? [rpt.raiseTo9]
       : [];
+    const mom = rpt.monthOverMonth?.hasPrevious ? rpt.monthOverMonth : null;
+    const momPrevDate = mom?.previousDate
+      ? new Date(mom.previousDate).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        })
+      : null;
 
     const subnetMeta = SUBNET_META[r.subnetNumber];
     const displayName =
@@ -1687,6 +1695,7 @@ function SubnetIntel() {
     const PRESETS = [
       "What are the main topics discussed?",
       "Evaluate the investability and give it a score 1-10.",
+      "What improvements have been made since last month?",
       "What are the most important developments to watch?",
       "What technical issues are users facing?",
       "What is the community sentiment about this subnet?",
@@ -2536,6 +2545,254 @@ function SubnetIntel() {
                     </ul>
                   </div>
                 )}
+
+                {/* ── MONTH-OVER-MONTH PROGRESS — did last period's goals get done? */}
+                {mom && (
+                  <div style={{ marginBottom: 20 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "#60a5fa",
+                        textTransform: "uppercase",
+                        letterSpacing: ".08em",
+                        marginBottom: 10,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <span>📈</span> Progress Since Last Report
+                      {momPrevDate && (
+                        <span
+                          style={{
+                            fontWeight: 500,
+                            color: "#64748b",
+                            textTransform: "none",
+                            letterSpacing: 0,
+                          }}
+                        >
+                          (compared to {momPrevDate})
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Score change badge */}
+                    {mom.currentScore != null && mom.previousScore != null && (
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          marginBottom: 12,
+                        }}
+                      >
+                        <span style={{ fontSize: 13, color: "#94a3b8" }}>
+                          Investability
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 14,
+                            fontWeight: 700,
+                            color: "#cbd5e1",
+                          }}
+                        >
+                          {mom.previousScore}
+                        </span>
+                        <span style={{ color: "#64748b" }}>→</span>
+                        <span
+                          style={{
+                            fontSize: 14,
+                            fontWeight: 700,
+                            color: "#e2e8f0",
+                          }}
+                        >
+                          {mom.currentScore}
+                        </span>
+                        {mom.scoreDelta != null && mom.scoreDelta !== 0 && (
+                          <span
+                            style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              padding: "2px 8px",
+                              borderRadius: 20,
+                              color:
+                                mom.direction === "up" ? "#10b981" : "#ef4444",
+                              background:
+                                mom.direction === "up"
+                                  ? "rgba(16,185,129,.12)"
+                                  : "rgba(239,68,68,.12)",
+                            }}
+                          >
+                            {mom.direction === "up" ? "▲" : "▼"}{" "}
+                            {Math.abs(mom.scoreDelta)}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {mom.summary && (
+                      <p
+                        style={{
+                          fontSize: 13,
+                          color: "#cbd5e1",
+                          lineHeight: 1.75,
+                          margin: "0 0 14px",
+                        }}
+                      >
+                        {mom.summary}
+                      </p>
+                    )}
+
+                    {/* Checklist of last period's goals */}
+                    {mom.improvements?.length > 0 && (
+                      <ul
+                        style={{
+                          margin: "0 0 14px",
+                          padding: 0,
+                          listStyle: "none",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 10,
+                        }}
+                      >
+                        {mom.improvements.map((im, i) => {
+                          const s = (im.status || "").toLowerCase();
+                          const cfg =
+                            s === "done"
+                              ? {
+                                  c: "#10b981",
+                                  bg: "rgba(16,185,129,.12)",
+                                  icon: "✓",
+                                  label: "Done",
+                                }
+                              : s === "in_progress"
+                              ? {
+                                  c: "#f59e0b",
+                                  bg: "rgba(245,158,11,.12)",
+                                  icon: "◐",
+                                  label: "In progress",
+                                }
+                              : {
+                                  c: "#94a3b8",
+                                  bg: "rgba(148,163,184,.12)",
+                                  icon: "○",
+                                  label: "Not addressed",
+                                };
+                          return (
+                            <li
+                              key={i}
+                              style={{
+                                display: "flex",
+                                gap: 10,
+                                alignItems: "flex-start",
+                              }}
+                            >
+                              <span
+                                style={{
+                                  flexShrink: 0,
+                                  marginTop: 1,
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  color: cfg.c,
+                                  background: cfg.bg,
+                                  borderRadius: 6,
+                                  padding: "2px 8px",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {cfg.icon} {cfg.label}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 13,
+                                  color: "#cbd5e1",
+                                  lineHeight: 1.7,
+                                }}
+                              >
+                                {im.item}
+                                {im.evidence && (
+                                  <span
+                                    style={{
+                                      display: "block",
+                                      fontSize: 12,
+                                      color: "#64748b",
+                                      marginTop: 2,
+                                    }}
+                                  >
+                                    {im.evidence}
+                                  </span>
+                                )}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+
+                    {mom.newProgress?.length > 0 && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 700,
+                            color: "#10b981",
+                            textTransform: "uppercase",
+                            letterSpacing: ".07em",
+                            marginBottom: 6,
+                          }}
+                        >
+                          New progress this period
+                        </div>
+                        <ul
+                          style={{
+                            margin: 0,
+                            paddingLeft: 18,
+                            color: "#cbd5e1",
+                            fontSize: 13,
+                            lineHeight: 1.7,
+                          }}
+                        >
+                          {mom.newProgress.map((p, i) => (
+                            <li key={i}>{p}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {mom.regressions?.length > 0 && (
+                      <div>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 700,
+                            color: "#ef4444",
+                            textTransform: "uppercase",
+                            letterSpacing: ".07em",
+                            marginBottom: 6,
+                          }}
+                        >
+                          Regressions / new concerns
+                        </div>
+                        <ul
+                          style={{
+                            margin: 0,
+                            paddingLeft: 18,
+                            color: "#cbd5e1",
+                            fontSize: 13,
+                            lineHeight: 1.7,
+                          }}
+                        >
+                          {mom.regressions.map((p, i) => (
+                            <li key={i}>{p}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <ProseBlock
                   label="What Would Lower the Rating"
                   labelColor="#ef4444"
@@ -3407,11 +3664,19 @@ function SubnetIntel() {
           >
             {sc.isPaused
               ? "Analysis is paused — resume it above before triggering a rotation run."
-              : "Runs next 3 subnets immediately without waiting for 08:00 UTC. Backfills channel data then runs AI analysis."}
+              : sc.manualRunLocked
+                ? `Manual run can only be used once per week. Available again on ${new Date(
+                    sc.manualRunAvailableAt,
+                  ).toLocaleDateString(undefined, {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                  })}.`
+                : "Runs next 3 subnets immediately without waiting for 08:00 UTC. Backfills channel data then runs AI analysis. Can be used once per week."}
           </p>
           <button
             onClick={() => runNow()}
-            disabled={running || sc.isPaused}
+            disabled={running || sc.isPaused || sc.manualRunLocked}
             style={{
               padding: "10px 24px",
               background: "linear-gradient(135deg,#3b82f6,#6366f1)",
@@ -3419,13 +3684,20 @@ function SubnetIntel() {
               borderRadius: 9,
               fontSize: 14,
               fontWeight: 600,
-              cursor: running || sc.isPaused ? "not-allowed" : "pointer",
+              cursor:
+                running || sc.isPaused || sc.manualRunLocked
+                  ? "not-allowed"
+                  : "pointer",
               border: "none",
-              opacity: running || sc.isPaused ? 0.5 : 1,
+              opacity: running || sc.isPaused || sc.manualRunLocked ? 0.5 : 1,
               fontFamily: "var(--font)",
             }}
           >
-            {running ? "⏳ Running…" : "▶ Run Next 3 Subnets Now"}
+            {running
+              ? "⏳ Running…"
+              : sc.manualRunLocked
+                ? "🔒 Available Next Week"
+                : "▶ Run Next 3 Subnets Now"}
           </button>
         </Card>
       </div>
@@ -7448,7 +7720,7 @@ export default function App() {
     servers: Servers,
     analytics: Analytics,
     settings: SubnetSettings,
-    history: History,
+    // history: History,
     subnets: SubnetIntel,
   };
   const Page = PAGES[page] || SubnetIntel;

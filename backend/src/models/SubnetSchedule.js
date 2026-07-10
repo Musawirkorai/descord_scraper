@@ -12,6 +12,12 @@ const subnetScheduleSchema = new mongoose.Schema({
   lastRunDate:  { type: Date },                  // last time scheduler ran
   isRunning:    { type: Boolean, default: false },// lock to prevent double-runs
 
+  // ── Manual "Run now" throttle ───────────────────────────────────────────────
+  // A manual run is allowed at most once every 7 days. This stores when the last
+  // manual run was triggered; the /run route rejects new manual runs until a week
+  // has passed. Automatic scheduled runs are NOT affected by this.
+  lastManualRunAt: { type: Date, default: null },
+
   // ── Pause / hold ──────────────────────────────────────────────────────────
   // When paused, the automatic daily rotation is skipped WITHOUT advancing the
   // rotation pointer, so resuming continues from exactly where it stopped.

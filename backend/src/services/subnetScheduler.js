@@ -17,6 +17,11 @@ const logger = require("../utils/logger");
 
 const SUBNETS_PER_DAY = 3;
 
+// Rolling window of chat to analyze: only the past ~1 month of messages is
+// considered. Anything older than this is ignored, so a report always reflects
+// the most recent month, never the full channel history.
+const ANALYSIS_WINDOW_DAYS = 30;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Sort channels by subnet number extracted from channel name
 // e.g. "11--trajectory-rl--λ" → 11, "general" → 999 (no number → end)
@@ -189,8 +194,8 @@ async function runDailySubnetAnalysis(
           }
         }
 
-        // Run AI analysis
-        const report = await analyzeSubnet(ch.discordId, ch.name, ch.subnetNumber, 7);
+        // Run AI analysis over the past ~1 month of messages only.
+        const report = await analyzeSubnet(ch.discordId, ch.name, ch.subnetNumber, ANALYSIS_WINDOW_DAYS);
 
         if (report) {
           await SubnetReport.findOneAndUpdate(
@@ -317,6 +322,53 @@ async function runDailySubnetAnalysis(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// RETENTION CLEANUP — keep reports for ~2 months, then delete older ones.
+// We keep two months so each new report can be compared against the prior period
+// (month-over-month: did last period's "raiseTo9" goals get delivered?).
+//
+// Safety: we NEVER delete a subnet's single most-recent report, even if it is
+// older than the cutoff. Some subnets sit far apart in the rotation, and the
+// month-over-month step (subnetIntelService) needs that latest prior report as
+// its comparison baseline. So we only prune old reports that already have a
+// newer report for the same subnet.
+// ─────────────────────────────────────────────────────────────────────────────
+const RETENTION_MONTHS = 2;
+
+async function cleanupOldReports() {
+  try {
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - RETENTION_MONTHS);
+    cutoff.setHours(0, 0, 0, 0);
+
+    // Most-recent report _id per subnet — these are always preserved.
+    const latest = await SubnetReport.aggregate([
+      { $sort: { reportDate: -1 } },
+      { $group: { _id: "$subnetNumber", latestId: { $first: "$_id" } } },
+    ]);
+    const keepIds = latest.map((d) => d.latestId);
+
+    const res = await SubnetReport.deleteMany({
+      reportDate: { $lt: cutoff },
+      _id: { $nin: keepIds },
+    });
+
+    if (res.deletedCount > 0) {
+      logger.info(
+        `🧹 Retention cleanup: deleted ${res.deletedCount} report(s) older than ${RETENTION_MONTHS} months (before ${cutoff.toISOString().split("T")[0]}), keeping each subnet's latest.`,
+      );
+    } else {
+      logger.info(
+        `🧹 Retention cleanup: nothing older than ${RETENTION_MONTHS} months to delete.`,
+      );
+    }
+    return res.deletedCount;
+  } catch (err) {
+    logger.error("Retention cleanup failed:", err.message);
+    return 0;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Startup catch-up: if today's batch hasn't run yet (server was down at midnight,
 // just rebooted, or first launch), run it once shortly after boot so a day is
 // never missed. Guarded by lastRunDate so restarts during the day don't re-run.
@@ -368,6 +420,8 @@ function startScheduler(discordClient, serverId) {
       } catch (err) {
         logger.error("Scheduled run failed:", err.message);
       }
+      // Prune reports older than the retention window after each daily run.
+      await cleanupOldReports();
     },
     { timezone },
   );
@@ -376,11 +430,16 @@ function startScheduler(discordClient, serverId) {
   if (process.env.SUBNET_RUN_ON_STARTUP !== "false") {
     setTimeout(() => runCatchUpIfNeeded(discordClient, serverId), 15000);
   }
+
+  // Prune old reports on startup too, so retention holds even if the server is
+  // rarely up at the scheduled cron time.
+  setTimeout(() => cleanupOldReports(), 30000);
 }
 
 module.exports = {
   startScheduler,
   runDailySubnetAnalysis,
   getSortedSubnetChannels,
+  cleanupOldReports,
   SUBNETS_PER_DAY,
 };

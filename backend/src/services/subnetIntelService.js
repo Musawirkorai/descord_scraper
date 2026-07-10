@@ -1,6 +1,7 @@
 const Groq = require("groq-sdk");
 const Message = require("../models/Message");
 const SubnetConfig = require("../models/SubnetConfig");
+const SubnetReport = require("../models/SubnetReport");
 const { getSubnetMeta } = require("../utils/subnetMeta");
 const logger = require("../utils/logger");
 
@@ -295,12 +296,115 @@ scoreLabel rules: 9-10 = Strong Buy, 7-8.9 = Buy, 5-6.9 = Hold, 3-4.9 = Caution,
   return parsed;
 }
 
+// ── MONTH-OVER-MONTH — compare this period against the previous report.
+// Judges whether last period's "raiseTo9" goals were actually delivered, using
+// ONLY this period's messages (usernames/timestamps already stripped upstream).
+async function analyzeMonthOverMonth(
+  channelName,
+  subnetNumber,
+  msgText,
+  currentInvest,
+  previousReport,
+) {
+  const prev = previousReport?.report || {};
+  const prevGoals = Array.isArray(prev.raiseTo9) ? prev.raiseTo9 : [];
+  const prevScore = prev.investabilityScore ?? null;
+  const currentScore = currentInvest.investabilityScore ?? null;
+  const prevDate = previousReport?.reportDate
+    ? new Date(previousReport.reportDate).toISOString().split("T")[0]
+    : null;
+
+  // Nothing meaningful to compare against
+  if (!prevGoals.length && prevScore == null) return null;
+
+  const goalsList = prevGoals.length
+    ? prevGoals.map((g, i) => `${i + 1}. ${g}`).join("\n")
+    : "(no specific goals were recorded last period)";
+
+  const prompt = `You are a Bittensor subnet analyst comparing this subnet's progress against the PREVIOUS report.
+
+Channel: ${channelName} — Subnet ${subnetNumber}
+
+LAST PERIOD, the analyst said the following would need to happen for a higher rating:
+${goalsList}
+
+LAST PERIOD investability score: ${prevScore ?? "unknown"}
+THIS PERIOD investability score: ${currentScore ?? "unknown"}
+
+THIS PERIOD's community messages (usernames and timestamps already removed):
+${msgText.substring(0, 5000)}
+
+HARD RULES:
+- Judge each previous goal ONLY from THIS period's messages
+- If a goal is not discussed at all this period, mark it "not_addressed" with evidence "No discussion found this period"
+- NEVER invent progress that is not supported by the messages
+- Do NOT include any username, sender name, timestamp, or personal data in the output
+- Keep every evidence string under 15 words
+
+Return ONLY valid JSON, no markdown:
+{
+  "summary": "2-3 sentences: what has actually changed since last period, grounded in the messages",
+  "improvements": [
+    {
+      "item": "restate the previous goal briefly",
+      "status": "done|in_progress|not_addressed",
+      "evidence": "short reference from this period's chat"
+    }
+  ],
+  "newProgress": [
+    "concrete improvement observed this period that was NOT one of the previous goals"
+  ],
+  "regressions": [
+    "something that got worse or a new concern versus last period"
+  ]
+}
+
+Include exactly one "improvements" entry for EVERY previous goal listed above.`;
+
+  const res = await openai.chat.completions.create({
+    model: MODEL,
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.1,
+    max_tokens: 2000,
+  });
+
+  const raw = res.choices[0].message.content.replace(/```json|```/g, "").trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    logger.error(`Month-over-month JSON parse failed: ${e.message}`);
+    return null;
+  }
+
+  const delta =
+    prevScore != null && currentScore != null
+      ? Math.round((currentScore - prevScore) * 10) / 10
+      : null;
+
+  return {
+    hasPrevious: true,
+    previousDate: previousReport?.reportDate || null,
+    previousScore: prevScore,
+    currentScore,
+    scoreDelta: delta,
+    direction:
+      delta == null ? "flat" : delta > 0 ? "up" : delta < 0 ? "down" : "flat",
+    summary: parsed.summary || "",
+    improvements: Array.isArray(parsed.improvements) ? parsed.improvements : [],
+    newProgress: Array.isArray(parsed.newProgress) ? parsed.newProgress : [],
+    regressions: Array.isArray(parsed.regressions) ? parsed.regressions : [],
+  };
+}
+
 // ── CHAT: answer a custom question about a subnet
 async function answerSubnetQuestion(
   channelId,
   subnetName,
   question,
   days = 30,
+  progressContext = "",
 ) {
   const {
     text: msgText,
@@ -315,13 +419,17 @@ async function answerSubnetQuestion(
 
 Messages from the past ${days} days (${sampled} of ${total} total, usernames removed):
 ${msgText.substring(0, 5000)}
-
+${
+  progressContext
+    ? `\nMONTH-OVER-MONTH PROGRESS (already computed from prior reports — usernames, timestamps, and personal data removed):\n${progressContext}\n`
+    : ""
+}
 HARD RULES:
-- Answer ONLY based on what is in the messages
+- Answer ONLY based on what is in the messages${progressContext ? " and the month-over-month progress above" : ""}
 - NEVER invent facts or add external knowledge
 - If the answer is not in the messages, say so clearly
 - Use bullet points for clarity
-- No usernames in output
+- No usernames, timestamps, or personal data of any sender in output
 - Mark anything uncertain as LOW CONFIDENCE
 
 Question: ${question}
@@ -397,6 +505,47 @@ async function analyzeSubnet(channelId, channelName, subnetNumber, days = 30) {
     topics,
   );
 
+  // Call 3 — month-over-month progress vs the previous completed report.
+  // Compares last period's "raiseTo9" goals against this period's discussion.
+  let monthOverMonth = null;
+  try {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const previousReport = await SubnetReport.findOne({
+      subnetNumber,
+      status: "completed",
+      reportDate: { $lt: todayStart },
+      "report.investabilityScore": { $ne: null },
+    })
+      .sort({ reportDate: -1 })
+      .lean();
+
+    if (previousReport) {
+      await new Promise((r) => setTimeout(r, 2000)); // rate-limit gap
+      monthOverMonth = await analyzeMonthOverMonth(
+        channelName,
+        subnetNumber,
+        msgText,
+        invest,
+        previousReport,
+      );
+      logger.info(
+        `Subnet ${subnetNumber}: month-over-month vs ${new Date(
+          previousReport.reportDate,
+        ).toISOString().split("T")[0]} — ${monthOverMonth ? "computed" : "skipped"}`,
+      );
+    } else {
+      logger.info(
+        `Subnet ${subnetNumber}: no prior report — baseline period, no comparison`,
+      );
+    }
+  } catch (e) {
+    logger.warn(
+      `Month-over-month comparison failed for subnet ${subnetNumber}: ${e.message}`,
+    );
+  }
+
   // Apply user-managed config (name/description) so Subnet Settings edits take effect
   const identity = await resolveSubnetIdentity(
     subnetNumber,
@@ -432,6 +581,7 @@ async function analyzeSubnet(channelId, channelName, subnetNumber, days = 30) {
     concerns: invest.concerns || [],
     whatImpresses: invest.whatImpresses || "",
     raiseTo9: invest.raiseTo9 || [],
+    monthOverMonth,
     lowerRating: invest.lowerRating || "",
     comparisonContext: invest.comparisonContext || "",
     bottomLine: invest.bottomLine || "",

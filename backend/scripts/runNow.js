@@ -8,7 +8,7 @@ mongoose.connect(process.env.MONGODB_URI).then(async () => {
   const result = await runDailySubnetAnalysis(
     null,
     process.env.DISCORD_GUILD_ID,
-    [31],
+    [42],
   );
   console.log(result);
   process.exit(0);

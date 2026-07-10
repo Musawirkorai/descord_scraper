@@ -10,6 +10,9 @@ const {
 } = require("../services/subnetScheduler");
 const { answerSubnetQuestion } = require("../services/subnetIntelService");
 
+// Manual "Run now" is allowed at most once every 7 days.
+const MANUAL_RUN_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
 // GET /api/subnets/today
 // Returns the latest batch keyed by reportDate — BOTH successful reports and
 // any that failed (e.g. rate limit / error), so the UI can surface subnets whose
@@ -147,6 +150,14 @@ router.get("/schedule", requireAuth, async (req, res) => {
     const progressPercent =
       total > 0 ? Math.round((currentIndex / total) * 100) : 0;
 
+    // When the manual "Run now" button becomes usable again (7 days after the
+    // last manual run). null if it has never been run manually.
+    const manualRunAvailableAt = schedule.lastManualRunAt
+      ? new Date(
+          new Date(schedule.lastManualRunAt).getTime() + MANUAL_RUN_COOLDOWN_MS,
+        )
+      : null;
+
     // Next SUBNETS_PER_DAY in rotation (the subnets the next run will target)
     const upcoming = allSubnets
       .slice(currentIndex, currentIndex + SUBNETS_PER_DAY)
@@ -166,6 +177,15 @@ router.get("/schedule", requireAuth, async (req, res) => {
       pausedAt: schedule.pausedAt,
       resumeAt: schedule.resumeAt,
       pauseReason: schedule.pauseReason,
+      // Manual "Run now" weekly cooldown — lets the UI disable the button and
+      // tell the user when it becomes available again.
+      lastManualRunAt: schedule.lastManualRunAt || null,
+      manualRunAvailableAt: manualRunAvailableAt
+        ? manualRunAvailableAt.toISOString()
+        : null,
+      manualRunLocked: manualRunAvailableAt
+        ? Date.now() < manualRunAvailableAt.getTime()
+        : false,
       upcoming,
     });
   } catch (err) {
@@ -242,7 +262,9 @@ router.post("/resume", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-// POST /api/subnets/run — trigger manual analysis
+// POST /api/subnets/run — trigger manual analysis.
+// Rate-limited to once every 7 days: after a manual run the button is locked
+// until the next week so it can't be spammed.
 router.post("/run", requireAuth, requireAdmin, async (req, res) => {
   try {
     const { subnetNumbers } = req.body;
@@ -250,9 +272,39 @@ router.post("/run", requireAuth, requireAdmin, async (req, res) => {
     if (!serverId)
       return res.status(400).json({ error: "DISCORD_GUILD_ID not set" });
 
+    // ── Weekly cooldown check ────────────────────────────────────────────────
+    const schedule = await SubnetSchedule.findOne();
+    const lastManual = schedule?.lastManualRunAt
+      ? new Date(schedule.lastManualRunAt)
+      : null;
+
+    if (lastManual) {
+      const availableAt = new Date(lastManual.getTime() + MANUAL_RUN_COOLDOWN_MS);
+      if (Date.now() < availableAt.getTime()) {
+        const msLeft = availableAt.getTime() - Date.now();
+        const daysLeft = Math.ceil(msLeft / (24 * 60 * 60 * 1000));
+        return res.status(429).json({
+          error: "manual_run_cooldown",
+          message: `Manual run is limited to once per week. You can run it again in ${daysLeft} day${daysLeft === 1 ? "" : "s"} (on ${availableAt.toISOString().split("T")[0]}).`,
+          lastManualRunAt: lastManual.toISOString(),
+          availableAt: availableAt.toISOString(),
+        });
+      }
+    }
+
+    // Record this manual run and start the cooldown window.
+    await SubnetSchedule.findOneAndUpdate(
+      {},
+      { lastManualRunAt: new Date() },
+      { upsert: true },
+    );
+
+    const availableAt = new Date(Date.now() + MANUAL_RUN_COOLDOWN_MS);
     res.json({
       message: "Analysis started",
       subnetNumbers: subnetNumbers || "next 3 in rotation",
+      note: `Manual run started. This can be used again on ${availableAt.toISOString().split("T")[0]} (once per week).`,
+      availableAt: availableAt.toISOString(),
     });
 
     const discordClient = require("../bot/index");
@@ -291,11 +343,35 @@ router.post("/chat/:subnetNumber", requireAuth, async (req, res) => {
     }).sort({ generatedAt: -1 });
     const subnetName = latestReport?.report?.subnetName || channel.name;
 
+    // Feed month-over-month progress (if computed) into the chat so questions like
+    // "what improved since last month?" answer from the comparison. No sender
+    // names/timestamps are included — only the already-sanitized progress fields.
+    let progressContext = "";
+    const mom = latestReport?.report?.monthOverMonth;
+    if (mom?.hasPrevious) {
+      const lines = [];
+      if (mom.summary) lines.push(`Summary: ${mom.summary}`);
+      if (mom.previousScore != null && mom.currentScore != null) {
+        lines.push(
+          `Investability score: ${mom.previousScore} → ${mom.currentScore} (${mom.direction})`,
+        );
+      }
+      (mom.improvements || []).forEach((im) =>
+        lines.push(
+          `- [${im.status}] ${im.item}${im.evidence ? ` — ${im.evidence}` : ""}`,
+        ),
+      );
+      (mom.newProgress || []).forEach((p) => lines.push(`- New progress: ${p}`));
+      (mom.regressions || []).forEach((p) => lines.push(`- Regression: ${p}`));
+      progressContext = lines.join("\n");
+    }
+
     const result = await answerSubnetQuestion(
       channel.discordId,
       subnetName,
       question,
       days,
+      progressContext,
     );
     res.json(result);
   } catch (err) {

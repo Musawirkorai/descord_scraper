@@ -36,6 +36,26 @@ const subnetReportSchema = new mongoose.Schema({
     whatImpresses: String,
     raiseTo9: [String],  // what would raise score to 9/10
 
+    // Section 2b — Month-over-month progress (vs the previous report for this subnet)
+    // Tracks whether last period's "raiseTo9" goals were actually delivered this
+    // period. hasPrevious=false on the very first report (nothing to compare to).
+    monthOverMonth: {
+      hasPrevious:   { type: Boolean, default: false },
+      previousDate:  Date,     // reportDate of the report being compared against
+      previousScore: Number,
+      currentScore:  Number,
+      scoreDelta:    Number,   // currentScore - previousScore
+      direction:     String,   // up | down | flat
+      summary:       String,   // narrative of what changed since last period
+      improvements: [{
+        item:     String,      // the goal set last period (a previous raiseTo9 item)
+        status:   String,      // done | in_progress | not_addressed
+        evidence: String,      // short reference from this period's chat
+      }],
+      newProgress:  [String],  // improvements this period that were not previously flagged
+      regressions:  [String],  // things that got worse / new concerns vs last period
+    },
+
     // Section 3 — Sentiment & signals
     sentiment:        String,
     emergingSignals: [{
