@@ -160,7 +160,6 @@ router.get("/history/timeline", requireAuth, async (req, res) => {
           emergingSignals: r.result?.emergingSignals || [],
           highlights: r.result?.highlights || [],
           summary: r.result?.summary || null,
-          messageCount: r.result?.messageCount || 0,
           channels: r.result?.channels || [],
         })),
       }));

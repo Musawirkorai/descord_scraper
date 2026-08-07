@@ -189,6 +189,7 @@ Return ONLY this JSON, no markdown:
   }
 
   delete result.activeUsers;
+  delete result.messageCount; // message counts are intentionally not stored
 
   await cacheSet(cacheKey, result, 86400);
   await AiResult.findOneAndUpdate(
@@ -296,8 +297,8 @@ Return ONLY this JSON, no markdown:
     result = { summary: response.choices[0].message.content };
   }
 
-  result.messageCount = messages.length;
   result.analyzedDays = days;
+  delete result.messageCount; // message counts are intentionally not stored
 
   await cacheSet(cacheKey, result, 7200);
   await AiResult.create({
@@ -630,6 +631,8 @@ Answer in clear bullet points. Mark anything uncertain as LOW CONFIDENCE.`;
     result.channels = targets.map((t) => t.targetName);
     delete result.activeUsers;
   }
+
+  delete result.messageCount; // message counts are intentionally not stored
 
   const cacheKey = buildCacheKey(
     `multi_${analysisType}`,

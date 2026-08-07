@@ -11,8 +11,10 @@ const cron = require("node-cron");
 const Channel = require("../models/Channel");
 const SubnetReport = require("../models/SubnetReport");
 const SubnetSchedule = require("../models/SubnetSchedule");
+const SubnetConfig = require("../models/SubnetConfig");
 const { analyzeSubnet } = require("./subnetIntelService");
 const { backfillChannel } = require("./scraperService");
+const { scrapeRepo } = require("./githubScraper");
 const logger = require("../utils/logger");
 
 const SUBNETS_PER_DAY = 3;
@@ -194,6 +196,28 @@ async function runDailySubnetAnalysis(
           }
         }
 
+        // Scrape this subnet's configured GitHub repos so the analysis step has
+        // fresh activity to read. Non-fatal — a repo failure still leaves a
+        // complete Discord report.
+        try {
+          const cfg = await SubnetConfig.findOne({ subnetNumber: ch.subnetNumber })
+            .select("githubRepos")
+            .lean();
+          const repos = cfg?.githubRepos || [];
+          for (const repo of repos) {
+            try {
+              await scrapeRepo(repo, { sinceDays: ANALYSIS_WINDOW_DAYS });
+            } catch (e) {
+              logger.warn(`  GitHub scrape failed for ${repo} (SN${ch.subnetNumber}): ${e.message}`);
+            }
+          }
+          if (repos.length) {
+            logger.info(`  → Scraped ${repos.length} GitHub repo(s) for SN${ch.subnetNumber}`);
+          }
+        } catch (e) {
+          logger.warn(`  GitHub repo lookup failed for SN${ch.subnetNumber}: ${e.message}`);
+        }
+
         // Run AI analysis over the past ~1 month of messages only.
         const report = await analyzeSubnet(ch.discordId, ch.name, ch.subnetNumber, ANALYSIS_WINDOW_DAYS);
 
@@ -217,8 +241,12 @@ async function runDailySubnetAnalysis(
           return { subnetNumber: ch.subnetNumber, name: ch.name, status: "ok" };
         }
 
-        // No report → empty / not enough messages. Skipped, doesn't count.
-        logger.info(`  ⏭️  Subnet ${ch.subnetNumber} skipped (no data) — trying next`);
+        // No report → BOTH sources were empty (no usable chat AND no GitHub data).
+        // A quiet Discord channel alone no longer lands here — analyzeSubnet still
+        // builds a GitHub-only report in that case.
+        logger.info(
+          `  ⏭️  Subnet ${ch.subnetNumber} skipped (no Discord messages and no GitHub data) — trying next`,
+        );
         return { subnetNumber: ch.subnetNumber, name: ch.name, status: "no_data" };
 
       } catch (err) {

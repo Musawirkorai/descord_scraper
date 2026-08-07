@@ -9,10 +9,7 @@ function transformMessage(msg) {
     discordId: msg.id,
     channelId: msg.channelId,
     serverId: msg.guildId,
-    authorId: msg.author.id,
-    authorUsername: msg.author.username,
-    authorDisplayName: msg.member?.displayName || msg.author.globalName || msg.author.username,
-    authorAvatar: msg.author.displayAvatarURL({ size: 64 }),
+    // Author identity is intentionally not captured or stored (privacy).
     content: msg.content,
     cleanContent: msg.cleanContent,
     embeds: msg.embeds.map(e => ({ title: e.title, description: e.description, url: e.url })),

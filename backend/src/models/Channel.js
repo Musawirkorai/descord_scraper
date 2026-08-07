@@ -11,7 +11,6 @@ const channelSchema = new mongoose.Schema({
   scrapeEnabled: { type: Boolean, default: false },
   lastMessageId: String,
   lastScrapedAt: Date,
-  messageCount: { type: Number, default: 0 },
   metadata: mongoose.Schema.Types.Mixed,
 }, { timestamps: true });
 

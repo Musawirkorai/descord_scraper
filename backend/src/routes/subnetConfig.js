@@ -60,6 +60,29 @@ router.put(
           ? req.body.description.trim()
           : "";
 
+      // Normalize GitHub repos into a clean, de-duplicated list of "owner/repo".
+      // Accepts an array or a comma/newline-separated string. Strips any full
+      // github.com URL down to "owner/repo".
+      let githubRepos;
+      if (req.body.githubRepos !== undefined) {
+        const raw = Array.isArray(req.body.githubRepos)
+          ? req.body.githubRepos
+          : String(req.body.githubRepos).split(/[\n,]/);
+        githubRepos = [
+          ...new Set(
+            raw
+              .map((s) =>
+                String(s)
+                  .trim()
+                  .replace(/^https?:\/\/github\.com\//i, "")
+                  .replace(/\.git$/i, "")
+                  .replace(/\/+$/, ""),
+              )
+              .filter((s) => /^[^/\s]+\/[^/\s]+$/.test(s)),
+          ),
+        ];
+      }
+
       if (!name) {
         return res.status(400).json({ error: "name is required" });
       }
@@ -71,9 +94,12 @@ router.put(
         { upsert: true, setDefaultsOnInsert: true },
       );
 
+      const update = { subnetNumber, name, category, description };
+      if (githubRepos !== undefined) update.githubRepos = githubRepos;
+
       const updated = await SubnetConfig.findOneAndUpdate(
         { subnetNumber },
-        { subnetNumber, name, category, description },
+        update,
         {
           upsert: true,
           new: true,

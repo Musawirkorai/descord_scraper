@@ -8,9 +8,6 @@
  * Storage mapping (mirrors the Discord shape):
  *   channelId = "owner/repo"   serverId = "github_owner"   source = "github"
  *
- * NOTE: the Message schema has no `metadata` field, so anything not in the schema
- * is dropped by Mongoose. We therefore encode the useful bits (kind, number,
- * state, labels, url) directly into `content` so the analyzer actually sees them.
  */
 
 const axios = require("axios");
@@ -155,8 +152,6 @@ async function fetchRepoIssues(owner, repo, options = {}) {
           externalId: `gh_${isPR ? "pr" : "issue"}_${issue.id}`,
           serverId: `github_${owner}`,
           channelId: `${owner}/${repo}`,
-          authorId: issue.user?.login || "unknown",
-          authorUsername: issue.user?.login || "unknown",
           content,
           discordCreatedAt: new Date(issue.created_at),
           source: "github",
@@ -197,8 +192,6 @@ async function fetchRepoComments(owner, repo, options = {}) {
           externalId: `gh_comment_${comment.id}`,
           serverId: `github_${owner}`,
           channelId: `${owner}/${repo}`,
-          authorId: comment.user?.login || "unknown",
-          authorUsername: comment.user?.login || "unknown",
           content: body,
           discordCreatedAt: new Date(comment.created_at),
           source: "github",
@@ -240,7 +233,6 @@ async function fetchRepoCommits(owner, repo, options = {}) {
     for (const c of items) {
       const message = c.commit?.message || "";
       if (/^merge\b/i.test(message)) continue; // skip merge-commit noise
-      const login = c.author?.login || c.commit?.author?.name || "unknown";
       const date = c.commit?.author?.date || c.commit?.committer?.date;
 
       saved.push(
@@ -248,8 +240,6 @@ async function fetchRepoCommits(owner, repo, options = {}) {
           externalId: `gh_commit_${c.sha}`,
           serverId: `github_${owner}`,
           channelId: `${owner}/${repo}`,
-          authorId: login,
-          authorUsername: login,
           content: `[COMMIT ${c.sha.slice(0, 7)}] ${message.split("\n")[0]}`,
           discordCreatedAt: new Date(date),
           source: "github",
@@ -309,6 +299,7 @@ async function fetchRepoMeta(owner, repo) {
     createdAt: data.created_at,
     url: data.html_url,
     latestRelease,
+    
   };
 }
 

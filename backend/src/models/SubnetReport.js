@@ -13,6 +13,7 @@ const subnetReportSchema = new mongoose.Schema({
   report: {
     subnetName:       String,
     subnetNumber:     Number,
+    briefDescription: String,     // 2-3 sentence overview of the subnet
 
     // Section 1 — Topics
     mainTopics: [{
@@ -23,7 +24,10 @@ const subnetReportSchema = new mongoose.Schema({
     oneLiner: String,
 
     // Section 2 — Investability
+    // null when the Discord channel had no usable messages this period (the report
+    // is then built from GitHub alone) — see dataCoverage below.
     investabilityScore: Number,   // 1-10
+    scoreLabel:         String,   // Strong Buy | Buy | Hold | Caution | Avoid
     investabilityBreakdown: {
       technology:          Number,
       teamExecution:       Number,
@@ -33,8 +37,11 @@ const subnetReportSchema = new mongoose.Schema({
     },
     positives:  [{ category: String, score: Number, detail: String }],
     concerns:   [{ category: String, score: Number, detail: String }],
-    whatImpresses: String,
-    raiseTo9: [String],  // what would raise score to 9/10
+    whatImpresses:     String,
+    raiseTo9:         [String],  // what would raise score to 9/10
+    lowerRating:       String,   // what would lower the rating significantly
+    comparisonContext: String,   // this subnet vs typical Bittensor subnets
+    bottomLine:        String,   // investment summary
 
     // Section 2b — Month-over-month progress (vs the previous report for this subnet)
     // Tracks whether last period's "raiseTo9" goals were actually delivered this
@@ -56,21 +63,93 @@ const subnetReportSchema = new mongoose.Schema({
       regressions:  [String],  // things that got worse / new concerns vs last period
     },
 
+    // Section 2c — GitHub development analysis (separate from Discord/investability).
+    // Aggregated across all of the subnet's repos. null when no repos are configured
+    // or none could be scraped. Repo health stats are deterministic (from the GitHub
+    // API); `activity` is an LLM summary of recent issues/PRs/commits/comments.
+    githubAnalysis: {
+      stats: {
+        repoCount:       Number,
+        totalStars:      Number,
+        totalForks:      Number,
+        totalOpenIssues: Number,
+        languages:       [String],
+        lastPushedAt:    Date,
+        repos: [{
+          fullName:          String,
+          description:       String,
+          stars:             Number,
+          forks:             Number,
+          openIssues:        Number,
+          language:          String,
+          pushedAt:          Date,
+          url:               String,
+          archived:          Boolean,
+          latestReleaseTag:  String,
+          latestReleaseDate: Date,
+        }],
+      },
+      activity: {
+        summary:        String,    // overview of what's going on with the repo
+        momentum:       String,    // high | moderate | low
+        momentumDetail: String,
+        devFocus:       [String],  // short focus-area chips
+        // Exhaustive development report — same shape as Discord mainTopics, so it
+        // renders in the same bulleted TopicBlock style.
+        topics: [{
+          title:        String,
+          description:  String,
+          bulletPoints: [String],
+        }],
+        recentHighlights: [String], // notable merged PRs / releases / fixes
+        concerns:         [String], // repo-level risks (stale areas, unresolved issues, etc.)
+      },
+      analyzedDays: Number,
+    },
+
+    // Section 2d — Final combined verdict (Discord + GitHub synthesized).
+    // The investment score shown at the very end of the report.
+    combinedVerdict: {
+      combinedScore: Number,   // 1-10, weighs community + development
+      scoreLabel:    String,   // Strong Buy | Buy | Hold | Caution | Avoid
+      rationale:     String,   // why this score
+      raiseRating:  [String],  // what would raise the combined rating
+      alphaOutlook: {
+        answer:     String,    // near-term alpha-token price outlook
+        catalysts: [String],   // concrete near-term catalysts
+        confidence: String,    // HIGH | MEDIUM | LOW
+      },
+    },
+
+    // Which sources actually backed this report. A quiet Discord channel no longer
+    // blocks a report — the GitHub half still runs — so the UI needs to know which
+    // signals are present to be honest about confidence.
+    // Qualitative only: no message counts are stored.
+    dataCoverage: {
+      hasDiscordData:    { type: Boolean, default: true },
+      discordVolume:     String,  // none | low | normal
+      hasGithubData:     { type: Boolean, default: false },
+      hasGithubActivity: { type: Boolean, default: false },
+    },
+
     // Section 3 — Sentiment & signals
     sentiment:        String,
+    overallSentiment: String,  // positive | negative | neutral | mixed
+    sentimentDetail:  String,  // what drives the sentiment
     emergingSignals: [{
       signal:     String,
       description: String,
       evidence:   String,
       confidence: String,
     }],
-    userIssues:    [String],
-    openQuestions: [String],
-    uncertainties: [String],
+    userIssues:          [String],
+    openQuestions:       [String],
+    developmentsToWatch: [String],
+    uncertainties:       [String],
 
     // Meta
-    messageCount: Number,
-    analyzedDays: Number,
+    samplingMethod: String,  // full | stratified_random
+    analyzedDays:   Number,
   },
 
   // Cycle tracking

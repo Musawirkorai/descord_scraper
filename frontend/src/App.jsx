@@ -778,6 +778,7 @@ const SubnetSettings = () => {
           name: edit.name,
           category: edit.category,
           description: edit.description,
+          githubRepos: edit.githubRepos ?? [],
         }),
       });
       handleCancel(subnetNumber);
@@ -1051,6 +1052,26 @@ const SubnetSettings = () => {
                       }
                       style={{ fontSize: 13, color: "var(--muted)" }}
                     />
+                    <input
+                      value={
+                        Array.isArray(cur.githubRepos)
+                          ? cur.githubRepos.join(", ")
+                          : cur.githubRepos || ""
+                      }
+                      placeholder="GitHub repos — owner/repo, comma-separated"
+                      onChange={(e) =>
+                        updateField(
+                          c.subnetNumber,
+                          "githubRepos",
+                          e.target.value,
+                        )
+                      }
+                      style={{
+                        fontSize: 12,
+                        color: "#c4b5fd",
+                        fontFamily: "var(--mono)",
+                      }}
+                    />
                   </div>
 
                   {/* Category */}
@@ -1233,8 +1254,8 @@ function SubnetIntel() {
   };
 
   // ── colour helpers
-  const scoreColor = (s) =>
-    s >= 8.5 ? "#10b981" : s >= 7 ? "#3b82f6" : s >= 5 ? "#f59e0b" : "#ef4444";
+  // Score color: 8 and above is green, anything below 8 is blue.
+  const scoreColor = (s) => (s >= 8 ? "#10b981" : "#3b82f6");
 
   const sentColor = (s) =>
     s === "positive"
@@ -1635,6 +1656,11 @@ function SubnetIntel() {
   const ReportModal = ({ r, onClose }) => {
     const rpt = r.report?.report || r.report || {}; // ← this line is missing
     const score = rpt.investabilityScore;
+    // Header shows the FINAL combined verdict (Discord + GitHub); the Investability
+    // Analysis section below keeps the Discord-only `score`. Falls back to the
+    // Discord score when no verdict was computed.
+    const headerScore = rpt.combinedVerdict?.combinedScore ?? rpt.investabilityScore;
+    const headerLabel = rpt.combinedVerdict?.scoreLabel || rpt.scoreLabel;
     const bd = rpt.investabilityBreakdown || {};
     const raiseTo9 = Array.isArray(rpt.raiseTo9)
       ? rpt.raiseTo9
@@ -1650,14 +1676,19 @@ function SubnetIntel() {
         })
       : null;
 
+   const config = configMap[r.subnetNumber];
     const subnetMeta = SUBNET_META[r.subnetNumber];
     const displayName =
+      config?.name ||
       subnetMeta?.name ||
       rpt.subnetName ||
       extractCleanName(r.channelName) ||
       r.channelName;
     const metaDescription =
-      subnetMeta?.description || rpt.briefDescription || null;
+      config?.description ||
+      subnetMeta?.description ||
+      rpt.briefDescription ||
+      null;
 
     const [chatMessages, setChatMsgs] = useState([]);
     const [chatInput, setChatInput] = useState("");
@@ -1953,7 +1984,7 @@ function SubnetIntel() {
             style={{
               padding: "22px 28px",
               borderBottom: "1px solid var(--border)",
-              background: `linear-gradient(135deg,${scoreColor(score)}0d,transparent)`,
+              background: `linear-gradient(135deg,${scoreColor(headerScore)}0d,transparent)`,
               display: "flex",
               alignItems: "center",
               gap: 16,
@@ -1969,14 +2000,14 @@ function SubnetIntel() {
                 height: 54,
                 borderRadius: 14,
                 flexShrink: 0,
-                background: `${scoreColor(score)}20`,
-                border: `1px solid ${scoreColor(score)}45`,
+                background: `${scoreColor(headerScore)}20`,
+                border: `1px solid ${scoreColor(headerScore)}45`,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 fontSize: 18,
                 fontWeight: 800,
-                color: scoreColor(score),
+                color: scoreColor(headerScore),
                 fontFamily: "var(--mono)",
               }}
             >
@@ -2031,17 +2062,17 @@ function SubnetIntel() {
                 gap: 5,
               }}
             >
-              <ScoreRing score={score} size={72} />
+              <ScoreRing score={headerScore} size={72} />
               <span
                 style={{
                   fontSize: 11,
                   fontWeight: 700,
-                  color: scoreColor(score),
+                  color: scoreColor(headerScore),
                   textTransform: "uppercase",
                   letterSpacing: ".06em",
                 }}
               >
-                {rpt.scoreLabel}
+                {headerLabel}
               </span>
             </div>
             <button
@@ -2163,13 +2194,59 @@ function SubnetIntel() {
               </p>
             )}
 
+            {/* ── DATA COVERAGE NOTICE
+                A quiet Discord channel no longer blocks a report — the GitHub half
+                still runs. Say so explicitly, so a missing/short Discord section
+                reads as "little was said" rather than "the analysis broke". */}
+            {(() => {
+              const dc = rpt.dataCoverage;
+              if (!dc) return null;
+              const vol = dc.discordVolume;
+              if (vol !== "none" && vol !== "low") return null;
+
+              const isNone = vol === "none";
+              const color = isNone ? "#f59e0b" : "#eab308";
+              const text = isNone
+                ? dc.hasGithubData
+                  ? "No Discord discussion was found in this period. This report is based on GitHub development activity only — treat the community signal as unavailable, not negative."
+                  : "No Discord discussion was found in this period."
+                : "This Discord channel was very quiet in this period, so the community analysis rests on a small number of messages. Read it as low-confidence.";
+
+              return (
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    alignItems: "flex-start",
+                    padding: "12px 16px",
+                    borderRadius: 11,
+                    marginBottom: 24,
+                    background: `${color}0f`,
+                    border: `1px solid ${color}38`,
+                  }}
+                >
+                  <span style={{ fontSize: 15, lineHeight: 1.5 }}>⚠️</span>
+                  <div
+                    style={{ fontSize: 12.5, color: color, lineHeight: 1.65 }}
+                  >
+                    <strong style={{ fontWeight: 700 }}>
+                      {isNone ? "Limited data — GitHub only" : "Low chat volume"}
+                    </strong>
+                    <div style={{ marginTop: 3, color: "var(--muted)" }}>
+                      {text}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* ═══════════════════════════════════════════════════════
               SECTION 1 — ALL TOPICS
           ═══════════════════════════════════════════════════════ */}
             {rpt.mainTopics?.length > 0 && (
               <Section
-                icon="📋"
-                title={`Topics Discussed (${rpt.mainTopics.length})`}
+                icon="💬"
+                title={`Discord — Topics Discussed (${rpt.mainTopics.length})`}
                 accentColor="#3b82f6"
               >
                 {rpt.briefDescription && (
@@ -2198,8 +2275,11 @@ function SubnetIntel() {
             )}
 
             {/* ═══════════════════════════════════════════════════════
-              SECTION 2 — INVESTABILITY
+              SECTION 2 — INVESTABILITY (Discord-derived)
+              Hidden when the channel had no usable messages this period — the
+              report is then built from GitHub alone and there is no community score.
           ═══════════════════════════════════════════════════════ */}
+            {score != null && (
             <Section
               icon="💰"
               title="Investability Analysis"
@@ -2807,6 +2887,345 @@ function SubnetIntel() {
                 />
               </div>
             </Section>
+            )}
+
+            {/* ═══════════════════════════════════════════════════════
+              SECTION 2c — GITHUB DEVELOPMENT (separate from Discord)
+          ═══════════════════════════════════════════════════════ */}
+            {rpt.githubAnalysis?.stats?.repoCount > 0 &&
+              (() => {
+                const gh = rpt.githubAnalysis;
+                const s = gh.stats;
+                const act = gh.activity;
+                const fmtDate = (d) =>
+                  d ? new Date(d).toISOString().split("T")[0] : "—";
+                const momColor =
+                  act?.momentum === "high"
+                    ? "#10b981"
+                    : act?.momentum === "moderate"
+                      ? "#f59e0b"
+                      : "#94a3b8";
+
+                const StatTile = ({ label, value }) => (
+                  <div
+                    style={{
+                      flex: "1 1 90px",
+                      background: "var(--card)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 11,
+                      padding: "14px 16px",
+                      textAlign: "center",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 22,
+                        fontWeight: 700,
+                        color: "#c4b5fd",
+                        fontFamily: "var(--mono)",
+                      }}
+                    >
+                      {value}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--muted)",
+                        textTransform: "uppercase",
+                        letterSpacing: ".06em",
+                        marginTop: 4,
+                      }}
+                    >
+                      {label}
+                    </div>
+                  </div>
+                );
+
+                return (
+                  <Section
+                    icon="🐙"
+                    title="GitHub Development"
+                    accentColor="#8b5cf6"
+                  >
+                    {/* Aggregate repo health tiles */}
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 10,
+                        marginBottom: 20,
+                      }}
+                    >
+                      <StatTile label="Repos" value={s.repoCount} />
+                      <StatTile
+                        label="Stars"
+                        value={(s.totalStars || 0).toLocaleString()}
+                      />
+                      <StatTile
+                        label="Forks"
+                        value={(s.totalForks || 0).toLocaleString()}
+                      />
+                      <StatTile
+                        label="Open Issues"
+                        value={(s.totalOpenIssues || 0).toLocaleString()}
+                      />
+                      {act?.momentum && (
+                        <div
+                          style={{
+                            flex: "1 1 90px",
+                            background: `${momColor}14`,
+                            border: `1px solid ${momColor}35`,
+                            borderRadius: 11,
+                            padding: "14px 16px",
+                            textAlign: "center",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 15,
+                              fontWeight: 700,
+                              color: momColor,
+                              textTransform: "capitalize",
+                            }}
+                          >
+                            {act.momentum}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: "var(--muted)",
+                              textTransform: "uppercase",
+                              letterSpacing: ".06em",
+                              marginTop: 4,
+                            }}
+                          >
+                            Momentum
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Languages + last push meta line */}
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "var(--muted)",
+                        marginBottom: 18,
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 14,
+                      }}
+                    >
+                      {s.languages?.length > 0 && (
+                        <span>🧩 {s.languages.join(", ")}</span>
+                      )}
+                      {s.lastPushedAt && (
+                        <span>⏱️ Last push {fmtDate(s.lastPushedAt)}</span>
+                      )}
+                    </div>
+
+                    {/* Per-repo list */}
+                    {s.repos?.length > 0 && (
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                          marginBottom: act ? 24 : 0,
+                        }}
+                      >
+                        {s.repos.map((r, i) => (
+                          <a
+                            key={i}
+                            href={r.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              alignItems: "center",
+                              gap: 12,
+                              padding: "10px 14px",
+                              borderRadius: 9,
+                              background: "rgba(139,92,246,.06)",
+                              border: "1px solid rgba(139,92,246,.15)",
+                              textDecoration: "none",
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontFamily: "var(--mono)",
+                                fontSize: 13,
+                                fontWeight: 600,
+                                color: "#c4b5fd",
+                              }}
+                            >
+                              {r.fullName}
+                            </span>
+                            {r.archived && (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  color: "#f59e0b",
+                                  border: "1px solid rgba(245,158,11,.3)",
+                                  borderRadius: 4,
+                                  padding: "1px 5px",
+                                  textTransform: "uppercase",
+                                }}
+                              >
+                                Archived
+                              </span>
+                            )}
+                            <span
+                              style={{
+                                marginLeft: "auto",
+                                fontSize: 12,
+                                color: "var(--muted)",
+                                fontFamily: "var(--mono)",
+                              }}
+                            >
+                              ★{(r.stars || 0).toLocaleString()} · ⑂
+                              {(r.forks || 0).toLocaleString()} · {r.openIssues}{" "}
+                              open
+                              {r.latestReleaseTag
+                                ? ` · ${r.latestReleaseTag}`
+                                : ""}
+                            </span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* LLM activity summary */}
+                    {act && (
+                      <>
+                        {act.summary && (
+                          <p
+                            style={{
+                              fontSize: 13.5,
+                              color: "#cbd5e1",
+                              lineHeight: 1.75,
+                              margin: "0 0 18px",
+                            }}
+                          >
+                            {act.summary}
+                          </p>
+                        )}
+
+                        {act.devFocus?.length > 0 && (
+                          <div
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              gap: 8,
+                              marginBottom: 20,
+                            }}
+                          >
+                            {act.devFocus.map((f, i) => (
+                              <span
+                                key={i}
+                                style={{
+                                  fontSize: 12,
+                                  fontWeight: 600,
+                                  color: "#c4b5fd",
+                                  background: "rgba(139,92,246,.1)",
+                                  border: "1px solid rgba(139,92,246,.25)",
+                                  borderRadius: 20,
+                                  padding: "4px 12px",
+                                }}
+                              >
+                                {f}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Full development report — bulleted topic blocks,
+                            same style as the Discord topics */}
+                        {act.topics?.length > 0 && (
+                          <div style={{ marginBottom: 8 }}>
+                            <div
+                              style={{
+                                fontSize: 12,
+                                fontWeight: 700,
+                                color: "var(--muted)",
+                                textTransform: "uppercase",
+                                letterSpacing: ".08em",
+                                marginBottom: 16,
+                              }}
+                            >
+                              Development Report ({act.topics.length})
+                            </div>
+                            {act.topics.map((topic, i) => (
+                              <TopicBlock key={i} topic={topic} index={i} />
+                            ))}
+                          </div>
+                        )}
+
+                        {act.recentHighlights?.length > 0 && (
+                          <div style={{ marginBottom: 20 }}>
+                            <div
+                              style={{
+                                fontSize: 12,
+                                fontWeight: 700,
+                                color: "var(--muted)",
+                                textTransform: "uppercase",
+                                letterSpacing: ".08em",
+                                marginBottom: 12,
+                              }}
+                            >
+                              ✨ Recent Highlights
+                            </div>
+                            <ul
+                              style={{
+                                margin: 0,
+                                paddingLeft: 18,
+                                color: "#cbd5e1",
+                                fontSize: 13,
+                                lineHeight: 1.8,
+                              }}
+                            >
+                              {act.recentHighlights.map((h, i) => (
+                                <li key={i}>{h}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {act.concerns?.length > 0 && (
+                          <div>
+                            <div
+                              style={{
+                                fontSize: 12,
+                                fontWeight: 700,
+                                color: "#f87171",
+                                textTransform: "uppercase",
+                                letterSpacing: ".08em",
+                                marginBottom: 12,
+                              }}
+                            >
+                              ⚠️ Repository Concerns
+                            </div>
+                            <ul
+                              style={{
+                                margin: 0,
+                                paddingLeft: 18,
+                                color: "#cbd5e1",
+                                fontSize: 13,
+                                lineHeight: 1.8,
+                              }}
+                            >
+                              {act.concerns.map((c, i) => (
+                                <li key={i}>{c}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </Section>
+                );
+              })()}
 
             {/* ═══════════════════════════════════════════════════════
               SECTION 3 — SIGNALS & ISSUES
@@ -2814,7 +3233,7 @@ function SubnetIntel() {
             {(rpt.emergingSignals?.length > 0 ||
               rpt.userIssues?.length > 0 ||
               rpt.openQuestions?.length > 0) && (
-              <Section icon="📡" title="Signals & Issues" accentColor="#f59e0b">
+              <Section icon="📡" title="Discord — Signals & Issues" accentColor="#f59e0b">
                 {/* Emerging signals — full width stacked */}
                 {rpt.emergingSignals?.length > 0 && (
                   <div style={{ marginBottom: 24 }}>
@@ -3084,6 +3503,208 @@ function SubnetIntel() {
                 </div>
               </Section>
             )}
+
+            {/* ═══════════════════════════════════════════════════════
+              SECTION 5 — FINAL COMBINED VERDICT (Discord + GitHub)
+          ═══════════════════════════════════════════════════════ */}
+            {rpt.combinedVerdict?.combinedScore != null &&
+              (() => {
+                const cv = rpt.combinedVerdict;
+                const scoreColor =
+                  cv.combinedScore >= 7
+                    ? "#10b981"
+                    : cv.combinedScore >= 5
+                      ? "#f59e0b"
+                      : "#ef4444";
+                const ao = cv.alphaOutlook || {};
+                const confColor =
+                  ao.confidence === "HIGH"
+                    ? "#10b981"
+                    : ao.confidence === "MEDIUM"
+                      ? "#f59e0b"
+                      : "#94a3b8";
+                return (
+                  <Section
+                    icon="🎯"
+                    title="Final Investment Verdict"
+                    accentColor="#10b981"
+                  >
+                    {/* Combined score header */}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 20,
+                        padding: "20px 22px",
+                        borderRadius: 14,
+                        marginBottom: 22,
+                        background: `${scoreColor}0d`,
+                        border: `1px solid ${scoreColor}30`,
+                      }}
+                    >
+                      <div style={{ textAlign: "center", flexShrink: 0 }}>
+                        <div
+                          style={{
+                            fontSize: 40,
+                            fontWeight: 800,
+                            lineHeight: 1,
+                            color: scoreColor,
+                            fontFamily: "var(--mono)",
+                          }}
+                        >
+                          {cv.combinedScore}
+                          <span
+                            style={{ fontSize: 18, color: "var(--muted)" }}
+                          >
+                            /10
+                          </span>
+                        </div>
+                        {cv.scoreLabel && (
+                          <div
+                            style={{
+                              marginTop: 8,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: scoreColor,
+                              textTransform: "uppercase",
+                              letterSpacing: ".06em",
+                            }}
+                          >
+                            {cv.scoreLabel}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 700,
+                            color: "var(--muted)",
+                            textTransform: "uppercase",
+                            letterSpacing: ".08em",
+                            marginBottom: 8,
+                          }}
+                        >
+                          Combined Score · Discord + GitHub
+                        </div>
+                        <p
+                          style={{
+                            margin: 0,
+                            fontSize: 13.5,
+                            color: "#cbd5e1",
+                            lineHeight: 1.75,
+                          }}
+                        >
+                          {cv.rationale}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* What would raise the rating */}
+                    {cv.raiseRating?.length > 0 && (
+                      <div style={{ marginBottom: 24 }}>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: "var(--muted)",
+                            textTransform: "uppercase",
+                            letterSpacing: ".08em",
+                            marginBottom: 12,
+                          }}
+                        >
+                          ⬆️ What Would Raise This Rating
+                        </div>
+                        <ul
+                          style={{
+                            margin: 0,
+                            paddingLeft: 18,
+                            color: "#cbd5e1",
+                            fontSize: 13,
+                            lineHeight: 1.8,
+                          }}
+                        >
+                          {cv.raiseRating.map((r, i) => (
+                            <li key={i}>{r}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Alpha token outlook */}
+                    {ao.answer && (
+                      <div
+                        style={{
+                          padding: "16px 18px",
+                          borderRadius: 12,
+                          background: "rgba(59,130,246,.06)",
+                          border: "1px solid rgba(59,130,246,.15)",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                            marginBottom: 10,
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: 13,
+                              fontWeight: 700,
+                              color: "#93c5fd",
+                            }}
+                          >
+                            📈 Near-Term Alpha Token Outlook
+                          </span>
+                          {ao.confidence && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 700,
+                                color: confColor,
+                                border: `1px solid ${confColor}40`,
+                                borderRadius: 5,
+                                padding: "2px 7px",
+                                textTransform: "uppercase",
+                                letterSpacing: ".05em",
+                              }}
+                            >
+                              {ao.confidence} confidence
+                            </span>
+                          )}
+                        </div>
+                        <p
+                          style={{
+                            margin: "0 0 12px",
+                            fontSize: 13,
+                            color: "#cbd5e1",
+                            lineHeight: 1.75,
+                          }}
+                        >
+                          {ao.answer}
+                        </p>
+                        {ao.catalysts?.length > 0 && (
+                          <ul
+                            style={{
+                              margin: 0,
+                              paddingLeft: 18,
+                              color: "#94a3b8",
+                              fontSize: 12.5,
+                              lineHeight: 1.7,
+                            }}
+                          >
+                            {ao.catalysts.map((c, i) => (
+                              <li key={i}>{c}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </Section>
+                );
+              })()}
           </div>
 
           {/* ═══════════════════════════════════════════════════════
@@ -3337,7 +3958,9 @@ function SubnetIntel() {
       ) : (
         leaderboard.map((r, i) => {
           const rpt = r.report || {};
-          const score = rpt.investabilityScore;
+          // Show the final combined verdict (Discord + GitHub); fall back to the
+          // Discord-only investability score when no verdict was computed.
+          const score = rpt.combinedVerdict?.combinedScore ?? rpt.investabilityScore;
           return (
             <div
               key={r._id}
@@ -3966,7 +4589,9 @@ function SubnetIntel() {
                   }
 
                   const rpt = r.report?.report || r.report || {};
-                  const score = rpt.investabilityScore;
+                  // Show the final combined verdict (Discord + GitHub); fall back
+                  // to the Discord-only score when no verdict was computed.
+                  const score = rpt.combinedVerdict?.combinedScore ?? rpt.investabilityScore;
                   const description =
                     meta?.description ||
                     rpt.briefDescription ||
@@ -4749,16 +5374,6 @@ function Messages() {
     twitter: "cyan",
     other: "gray",
   };
-  const AV = [
-    "#3b82f6",
-    "#8b5cf6",
-    "#10b981",
-    "#f59e0b",
-    "#ef4444",
-    "#06b6d4",
-    "#ec4899",
-    "#6366f1",
-  ];
   const ago = (iso) => {
     const d = Date.now() - new Date(iso).getTime(),
       h = Math.floor(d / 3.6e6);
@@ -4784,7 +5399,7 @@ function Messages() {
             Messages
           </h2>
           <p style={{ color: "var(--muted)", fontSize: 14 }}>
-            {pag ? `${pag.total.toLocaleString()} total` : "Loading…"}
+            {pag ? "Browse scraped messages" : "Loading…"}
           </p>
         </div>
       </div>
@@ -4892,17 +5507,15 @@ function Messages() {
                     height: 34,
                     borderRadius: 9,
                     flexShrink: 0,
-                    background: AV[m.authorId?.charCodeAt(0) % AV.length || 0],
+                    background: "rgba(148,163,184,.15)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: "white",
+                    fontSize: 15,
                     marginTop: 2,
                   }}
                 >
-                  {m.authorUsername?.[0]?.toUpperCase() || "?"}
+                  {m.source === "github" ? "🐙" : "💬"}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div
@@ -4914,9 +5527,6 @@ function Messages() {
                       marginBottom: 5,
                     }}
                   >
-                    <span style={{ fontSize: 14, fontWeight: 600 }}>
-                      {m.authorUsername}
-                    </span>
                     <Badge color={SRC[m.source] || "gray"}>{m.source}</Badge>
                     {m.sentiment && (
                       <span
@@ -5545,18 +6155,6 @@ function Analytics({ user }) {
                   #{c}
                 </Badge>
               ))}
-              {result.messageCount > 0 && (
-                <span
-                  style={{
-                    marginLeft: "auto",
-                    fontSize: 12,
-                    color: "var(--muted)",
-                    fontFamily: "var(--mono)",
-                  }}
-                >
-                  {result.messageCount.toLocaleString()} messages processed
-                </span>
-              )}
             </div>
           );
 
@@ -6367,11 +6965,6 @@ function Analytics({ user }) {
                       {topicCount > 0 && (
                         <span style={{ color: "var(--dim)" }}>
                           · {topicCount} topics extracted
-                        </span>
-                      )}
-                      {h.result?.messageCount > 0 && (
-                        <span style={{ color: "var(--dim)" }}>
-                          · {h.result.messageCount.toLocaleString()} msgs
                         </span>
                       )}
                     </div>
@@ -7217,17 +7810,6 @@ function History() {
                           flexShrink: 0,
                         }}
                       >
-                        {item.messageCount > 0 && (
-                          <span
-                            style={{
-                              fontSize: 11,
-                              color: "var(--dim)",
-                              fontFamily: "var(--mono)",
-                            }}
-                          >
-                            {item.messageCount.toLocaleString()} msgs
-                          </span>
-                        )}
                         <span style={{ fontSize: 11, color: "var(--dim)" }}>
                           {ago(item.generatedAt)}
                         </span>

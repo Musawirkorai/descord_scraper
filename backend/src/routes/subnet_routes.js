@@ -97,7 +97,19 @@ router.get("/leaderboard", requireAuth, async (req, res) => {
       { $sort: { subnetNumber: 1, generatedAt: -1 } },
       { $group: { _id: "$subnetNumber", doc: { $first: "$$ROOT" } } },
       { $replaceRoot: { newRoot: "$doc" } },
-      { $sort: { "report.investabilityScore": -1 } },
+      // Rank by the final combined verdict (Discord + GitHub); fall back to the
+      // Discord-only investability score when a subnet has no verdict yet.
+      {
+        $addFields: {
+          rankScore: {
+            $ifNull: [
+              "$report.combinedVerdict.combinedScore",
+              "$report.investabilityScore",
+            ],
+          },
+        },
+      },
+      { $sort: { rankScore: -1 } },
       {
         $project: {
           subnetNumber: 1,
@@ -110,8 +122,8 @@ router.get("/leaderboard", requireAuth, async (req, res) => {
           "report.overallSentiment": 1,
           "report.oneLiner": 1,
           "report.briefDescription": 1,
-          "report.messageCount": 1,
           "report.bottomLine": 1,
+          "report.combinedVerdict": 1,
         },
       },
     ]);
@@ -393,14 +405,11 @@ router.get("/system-status", requireAuth, requireAdmin, async (req, res) => {
     const schedule = await SubnetSchedule.findOne();
 
     const channels = await Channel.find().sort({ name: 1 });
-    const channelStats = await Promise.all(
-      channels.map(async (ch) => ({
-        name: ch.name,
-        discordId: ch.discordId,
-        scrapeEnabled: ch.scrapeEnabled,
-        messageCount: await Message.countDocuments({ channelId: ch.discordId }),
-      })),
-    );
+    const channelStats = channels.map((ch) => ({
+      name: ch.name,
+      discordId: ch.discordId,
+      scrapeEnabled: ch.scrapeEnabled,
+    }));
 
     const recentReports = await SubnetReport.find({ status: "completed" })
       .sort({ generatedAt: -1 })

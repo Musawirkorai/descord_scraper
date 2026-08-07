@@ -51,10 +51,10 @@ async function backfillChannel(discordClient, channelId, options = {}) {
     await sleep(DELAY_MS);
   }
 
-  // Update channel record
+  // Update channel record (message counts are intentionally not stored)
   await Channel.findOneAndUpdate(
     { discordId: channelId },
-    { lastScrapedAt: new Date(), messageCount: totalFetched }
+    { lastScrapedAt: new Date() }
   );
 
   logger.info(`✅ Backfill complete for #${channel.name}: ${totalFetched} total messages`);

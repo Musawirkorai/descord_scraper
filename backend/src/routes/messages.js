@@ -2,11 +2,11 @@ const router = require('express').Router();
 const Message = require('../models/Message');
 const { requireAuth } = require('../middleware/auth');
 
-// GET /api/messages?serverId&channelId&authorId&keyword&from&to&source&page&limit
+// GET /api/messages?serverId&channelId&keyword&from&to&source&page&limit
 router.get('/', requireAuth, async (req, res) => {
   try {
     const {
-      serverId, channelId, authorId, keyword, source,
+      serverId, channelId, keyword, source,
       from, to, sentiment,
       page = 1, limit = 50,
       sort = '-discordCreatedAt',
@@ -15,7 +15,6 @@ router.get('/', requireAuth, async (req, res) => {
     const filter = {};
     if (serverId) filter.serverId = serverId;
     if (channelId) filter.channelId = channelId;
-    if (authorId) filter.authorId = authorId;
     if (source) filter.source = source;
     if (sentiment) filter.sentiment = sentiment;
     if (from || to) {
@@ -56,8 +55,7 @@ router.get('/stats', requireAuth, async (req, res) => {
       if (to) match.discordCreatedAt.$lte = new Date(to);
     }
 
-    const [total, bySource, byDay, topAuthors] = await Promise.all([
-      Message.countDocuments(match),
+    const [bySource, byDay] = await Promise.all([
       Message.aggregate([{ $match: match }, { $group: { _id: '$source', count: { $sum: 1 } } }]),
       Message.aggregate([
         { $match: match },
@@ -65,15 +63,9 @@ router.get('/stats', requireAuth, async (req, res) => {
         { $sort: { _id: 1 } },
         { $limit: 30 },
       ]),
-      Message.aggregate([
-        { $match: match },
-        { $group: { _id: '$authorUsername', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 10 },
-      ]),
     ]);
 
-    res.json({ total, bySource, byDay, topAuthors });
+    res.json({ bySource, byDay });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
