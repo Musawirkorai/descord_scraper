@@ -10,7 +10,17 @@
       "Bash(node -c src/routes/subnet_routes.js)",
       "Bash(node -c src/models/SubnetReport.js)",
       "Bash(node --check src/routes/subnet_routes.js)",
-      "Bash(node --check src/models/SubnetSchedule.js)"
+      "Bash(node --check src/models/SubnetSchedule.js)",
+      "Bash(break)",
+      "Bash(node --check scripts/seedGithubRepos.js)",
+      "Bash(node -e \"const c=require\\('./scripts/seedGithubRepos.js'\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(node scripts/purgePII.js)",
+      "Bash(node --check scripts/purgePII.js)",
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('sample-subnet-report.json','utf8'\\)\\); console.log\\('sample-subnet-report.json — valid JSON ✓'\\)\")",
+      "Skill(artifact-design)",
+      "Skill(artifact-design:*)",
+      "Bash(node \"C:/Users/iBraHeeM/AppData/Local/Temp/claude/C--Users-iBraHeeM-Projects-discord-scraper/e9d1665b-1f5c-4cc6-b75c-0bbdd3701510/scratchpad/testLowData.js\")"
     ]
   }
 }

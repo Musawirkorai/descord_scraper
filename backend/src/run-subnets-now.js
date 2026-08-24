@@ -7,14 +7,18 @@
  *
  * Run with: node src/run-subnets-now.js
  *
- * Note: this standalone script has no live Discord client, so it analyzes the
- * messages already in the DB (no fresh backfill). The automatic scheduler in the
- * running backend does backfill from Discord first.
+ * Logs in a short-lived Discord client first so the run backfills fresh chat
+ * history, matching what the scheduler inside the running backend does. If no
+ * bot token is configured it degrades to analyzing whatever is already in Mongo.
  */
 
 require("dotenv").config();
 const mongoose = require("mongoose");
 const { runDailySubnetAnalysis } = require("./services/subnetScheduler");
+const {
+  createScraperClient,
+  destroyScraperClient,
+} = require("./bot/scraperClient");
 
 async function main() {
   await mongoose.connect(
@@ -30,7 +34,13 @@ async function main() {
   }
 
   console.log("📊 Running today's scheduled batch (next 3 in rotation)...\n");
-  const result = await runDailySubnetAnalysis(null, serverId);
+  const client = await createScraperClient();
+  let result;
+  try {
+    result = await runDailySubnetAnalysis(client, serverId);
+  } finally {
+    await destroyScraperClient(client);
+  }
 
   console.log("\n🎉 Done:", JSON.stringify(result, null, 2));
   await mongoose.disconnect();

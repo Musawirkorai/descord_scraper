@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const api = axios.create({ baseURL: '/api' });
+// Same base as App.jsx so both clients agree on where the API lives.
+// See the note in App.jsx: this is inlined at build time, not read at runtime.
+const api = axios.create({ baseURL: process.env.REACT_APP_API_URL || '/api' });
 
 api.interceptors.request.use(config => {
   const token = localStorage.getItem('token');

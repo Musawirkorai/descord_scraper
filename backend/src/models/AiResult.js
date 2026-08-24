@@ -26,7 +26,9 @@ const aiResultSchema = new mongoose.Schema(
       to: Date,
     },
     result: { type: mongoose.Schema.Types.Mixed, required: true },
-    model: { type: String, default: "gpt-4o-mini" },
+    // Set from llmProvider.MODEL by the caller. The old "gpt-4o-mini" default
+    // mislabelled every stored result, so there is deliberately no default.
+    model: { type: String },
     tokensUsed: Number,
     generatedAt: { type: Date, default: Date.now, index: true },
     expiresAt: Date, // for TTL-based invalidation

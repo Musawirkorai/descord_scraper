@@ -1,4 +1,3 @@
-const Groq = require("groq-sdk");
 const Message = require("../models/Message");
 const SubnetConfig = require("../models/SubnetConfig");
 const SubnetReport = require("../models/SubnetReport");
@@ -6,11 +5,37 @@ const { getSubnetMeta } = require("../utils/subnetMeta");
 const { fetchRepoMeta, parseRepo } = require("./githubScraper");
 const logger = require("../utils/logger");
 
-const openai = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const MODEL = "llama-3.3-70b-versatile";
+// Provider router: Gemini (default) or Groq, both behind the same
+// `.chat.completions.create(...)` interface, each with key rotation on rate
+// limit. Model id comes from the provider so it is never hardcoded here.
+const llm = require("./llmProvider");
+const openai = llm;
+const MODEL = llm.MODEL;
 
-const SAMPLE_THRESHOLD = 500;
-const SAMPLE_SIZE = 300;
+// ── How much of the month actually reaches the model ─────────────────────────
+// Down-sampling is an accuracy tax: a stratified random sample of a month of
+// chat can miss the exact incident that mattered. It exists only because a 131k
+// context cannot hold a busy channel's month. On a 1M-token context (Gemini
+// Flash) the whole window fits, so these caps scale with the provider and
+// sampling effectively stops happening for a normal channel. Override any of
+// them explicitly if you need to.
+const LONG_CTX = llm.IS_LONG_CONTEXT;
+const envInt = (name, fallback) => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
+};
+
+// Above this many messages in the window, fall back to stratified sampling.
+const SAMPLE_THRESHOLD = envInt("ANALYSIS_SAMPLE_THRESHOLD", LONG_CTX ? 6000 : 500);
+// How many messages that sampling keeps.
+const SAMPLE_SIZE = envInt("ANALYSIS_SAMPLE_SIZE", LONG_CTX ? 4000 : 300);
+// Hard ceiling on messages fetched when NOT sampling.
+const MESSAGE_FETCH_LIMIT = envInt("ANALYSIS_MESSAGE_LIMIT", LONG_CTX ? 6000 : 800);
+// Per-message character cap — long context means less clipping mid-message.
+const MESSAGE_CHAR_CAP = envInt("ANALYSIS_MESSAGE_CHARS", LONG_CTX ? 2000 : 600);
+// GitHub activity is far lower-volume than chat, so it gets its own caps.
+const GITHUB_FETCH_LIMIT = envInt("ANALYSIS_GITHUB_LIMIT", LONG_CTX ? 2000 : 400);
+const GITHUB_CHAR_CAP = envInt("ANALYSIS_GITHUB_CHARS", LONG_CTX ? 2000 : 600);
 
 // Minimum usable (post-cleaning) messages needed to run the Discord analysis at
 // all. Deliberately 1: a single real message is still worth analyzing, and when
@@ -64,7 +89,7 @@ async function fetchChannelMessages(channelId, days = 30) {
     samplingMethod = "full";
     messages = await Message.find(query)
       .sort({ discordCreatedAt: 1 })
-      .limit(800)
+      .limit(MESSAGE_FETCH_LIMIT)
       .select("content discordCreatedAt extractedText");
   } else {
     samplingMethod = "stratified_random";
@@ -116,7 +141,7 @@ async function fetchChannelMessages(channelId, days = 30) {
     .filter((t) => t.length > 2);
 
   const formatted = cleaned
-    .map((t, i) => `${i + 1}. ${t.substring(0, 600)}`)
+    .map((t, i) => `${i + 1}. ${t.substring(0, MESSAGE_CHAR_CAP)}`)
     .join("\n");
 
   logger.info(
@@ -221,6 +246,7 @@ Return ONLY valid JSON, no markdown:
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 4000,
+    json: true,
   });
 
   const raw = res.choices[0].message.content.replace(/```json|```/g, "").trim();
@@ -325,6 +351,7 @@ scoreLabel rules: 9-10 = Strong Buy, 7-8.9 = Buy, 5-6.9 = Hold, 3-4.9 = Caution,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 3000,
+    json: true,
   });
 
   const raw = res.choices[0].message.content.replace(/```json|```/g, "").trim();
@@ -417,6 +444,7 @@ Include exactly one "improvements" entry for EVERY previous goal listed above.`;
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 2000,
+    json: true,
   });
 
   const raw = res.choices[0].message.content.replace(/```json|```/g, "").trim();
@@ -524,14 +552,14 @@ async function fetchGithubMessages(channelIds, days = 30) {
   // up to a cap rather than stratified sampling.
   const messages = await Message.find(query)
     .sort({ discordCreatedAt: -1 })
-    .limit(400)
+    .limit(GITHUB_FETCH_LIMIT)
     .select("content discordCreatedAt")
     .lean();
 
   const formatted = messages
     .map((m) => (m.content || "").trim())
     .filter((t) => t.length > 5)
-    .map((t, i) => `${i + 1}. ${t.substring(0, 600)}`)
+    .map((t, i) => `${i + 1}. ${t.substring(0, GITHUB_CHAR_CAP)}`)
     .join("\n");
 
   logger.info(
@@ -600,6 +628,7 @@ Aim for as many topics as the activity genuinely supports — missing a real dev
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 4000,
+    json: true,
   });
 
   const raw = res.choices[0].message.content.replace(/```json|```/g, "").trim();
@@ -820,6 +849,7 @@ scoreLabel rules: 9-10 = Strong Buy, 7-8.9 = Buy, 5-6.9 = Hold, 3-4.9 = Caution,
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 2500,
+    json: true,
   });
 
   const raw = res.choices[0].message.content.replace(/```json|```/g, "").trim();

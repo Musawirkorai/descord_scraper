@@ -3,9 +3,26 @@ const AiResult = require("../models/AiResult");
 const Message = require("../models/Message");
 const logger = require("../utils/logger");
 
-const Groq = require("groq-sdk");
-const openai = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const MODEL = "llama-3.3-70b-versatile";
+// Provider router: Gemini (default) or Groq, both behind the same
+// `.chat.completions.create(...)` interface, each with key rotation on rate
+// limit. Model id comes from the provider so it is never hardcoded here.
+const llm = require("./llmProvider");
+const openai = llm;
+const MODEL = llm.MODEL;
+
+// Same reasoning as subnetIntelService: these caps exist to fit a small context
+// window, so they scale with the provider. See llmProvider.IS_LONG_CONTEXT.
+const LONG_CTX = llm.IS_LONG_CONTEXT;
+const envInt = (name, fallback) => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
+};
+const ANALYSIS_MESSAGE_LIMIT = envInt(
+  "ANALYSIS_MESSAGE_LIMIT",
+  LONG_CTX ? 6000 : 500,
+);
+const MESSAGE_CHAR_CAP = envInt("ANALYSIS_MESSAGE_CHARS", LONG_CTX ? 2000 : 1200);
+const FILE_CHAR_CAP = envInt("ANALYSIS_FILE_CHARS", LONG_CTX ? 4000 : 800);
 
 function buildCacheKey(type, scope, targetId, dateStr) {
   return `ai:${type}:${scope}:${targetId}:${dateStr}`;
@@ -16,7 +33,7 @@ async function fetchMessagesForAnalysis(
   targetId,
   from,
   to,
-  limit = 500,
+  limit = ANALYSIS_MESSAGE_LIMIT,
 ) {
   const query = { discordCreatedAt: { $gte: from, $lte: to } };
   if (scope === "channel") query.channelId = targetId;
@@ -84,12 +101,12 @@ function formatMessagesForPrompt(messages) {
     .map((m) => {
       let text = cleanMessageContent(m.content);
       if (m.extractedText) {
-        text += `\n[Attached file content]: ${m.extractedText.substring(0, 800)}`;
+        text += `\n[Attached file content]: ${m.extractedText.substring(0, FILE_CHAR_CAP)}`;
       }
       return text;
     })
     .filter((c) => c.length > 8)
-    .map((c, i) => `${i + 1}. ${c.substring(0, 1200)}`)
+    .map((c, i) => `${i + 1}. ${c.substring(0, MESSAGE_CHAR_CAP)}`)
     .join("\n");
 }
 
@@ -172,6 +189,7 @@ Return ONLY this JSON, no markdown:
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 1500,
+    json: true,
   });
 
   let result;
@@ -285,6 +303,7 @@ Return ONLY this JSON, no markdown:
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 1500,
+    json: true,
   });
 
   let result;
@@ -368,6 +387,7 @@ Return ONLY this JSON, no markdown:
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 800,
+    json: true,
   });
 
   try {
@@ -607,6 +627,7 @@ Answer in clear bullet points. Mark anything uncertain as LOW CONFIDENCE.`;
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 2000,
+    json: analysisType !== "ask",
   });
 
   let result;
@@ -782,6 +803,7 @@ HARD RULES:
     messages: [{ role: "user", content: prompt }],
     temperature: 0.1,
     max_tokens: 4000,
+    json: true,
   });
 
   let result;

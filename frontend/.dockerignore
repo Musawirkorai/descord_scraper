@@ -1,0 +1,17 @@
+# See backend/.dockerignore for why excluding node_modules matters: `COPY . .`
+# would otherwise overwrite the image's freshly installed dependencies with the
+# host's, which breaks cross-architecture builds.
+node_modules
+npm-debug.log*
+
+# A stale local CRA build would be copied over the one built in the image.
+build
+
+.env
+.env.*
+!.env.example
+
+Dockerfile
+.dockerignore
+.git
+.gitignore

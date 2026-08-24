@@ -24,14 +24,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── Warn only once if no token is configured (60 req/hr vs 5000 with a token)
 let warnedNoToken = false;
+
+// Set once a 401 proves the configured token is invalid/expired. An unusable
+// token is strictly worse than no token: public repos are readable anonymously,
+// but sending bad credentials turns those 200s into 401s. So we drop the token
+// for the rest of the process and keep going unauthenticated.
+let authDisabled = false;
+
 function authHeaders() {
   const headers = {
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
   };
-  if (process.env.GITHUB_TOKEN) {
+  if (process.env.GITHUB_TOKEN && !authDisabled) {
     headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
-  } else if (!warnedNoToken) {
+  } else if (!process.env.GITHUB_TOKEN && !warnedNoToken) {
     warnedNoToken = true;
     logger.warn(
       "GITHUB_TOKEN not set — GitHub API is limited to 60 requests/hour. Set a token in .env.",
@@ -94,7 +101,19 @@ async function ghGet(path, params = {}, attempt = 1) {
     return ghGet(path, params, attempt + 1);
   }
 
-  // Anything else (404, 401, etc.) — surface it.
+  // Invalid/expired token — retry once anonymously and stay anonymous. Public
+  // repos still work; only private ones are genuinely lost.
+  if (res.status === 401 && process.env.GITHUB_TOKEN && !authDisabled) {
+    authDisabled = true;
+    logger.warn(
+      "GITHUB_TOKEN is invalid or expired (401 Bad credentials) — falling back to " +
+        "unauthenticated GitHub requests (60 req/hr, public repos only) for the rest " +
+        "of this process. Replace the token in .env to restore the 5000 req/hr limit.",
+    );
+    return ghGet(path, params, attempt);
+  }
+
+  // Anything else (404, or a 401 with no usable token left) — surface it.
   const msg = res.data?.message || res.statusText;
   const err = new Error(`GitHub ${res.status} on ${path}: ${msg}`);
   err.status = res.status;

@@ -50,7 +50,12 @@ const CSS = `
 `;
 
 // ── API ──────────────────────────────────────────────────────────────────────
-const BASE = "http://localhost:4000/api";
+// Set REACT_APP_API_URL at BUILD time (CRA inlines it — it is not read at
+// runtime). Leave it unset for local dev and requests go to the CRA dev-server
+// proxy in package.json. In production point it at the deployed API, e.g.
+//   REACT_APP_API_URL=https://api.example.com/api
+// When the API is served from the same origin behind nginx, "/api" is correct.
+const BASE = process.env.REACT_APP_API_URL || "/api";
 let _token = "";
 const setToken = (t) => {
   _token = t;

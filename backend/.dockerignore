@@ -1,0 +1,22 @@
+# Both backend Dockerfiles do `COPY . .` after `npm ci`. Without this file that
+# copy drags the host's node_modules into the image, overwriting the freshly
+# installed one. On a different CPU architecture (an ARM host such as an Oracle
+# Ampere VM, or Apple Silicon) the host's native modules are the wrong binaries
+# and the container fails at require() time.
+node_modules
+npm-debug.log*
+
+# Secrets must come from the platform's env/secret store, never baked in.
+.env
+.env.*
+!.env.example
+
+# Runtime output — the compose file mounts logs/ as a volume instead.
+logs
+*.log
+
+Dockerfile
+Dockerfile.bot
+.dockerignore
+.git
+.gitignore
