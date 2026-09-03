@@ -1698,16 +1698,23 @@ function SubnetIntel() {
     const [chatMessages, setChatMsgs] = useState([]);
     const [chatInput, setChatInput] = useState("");
     const [chatLoading, setChatLoad] = useState(false);
+    // Collapsed by default: expanded, the panel is docked to the bottom of the
+    // modal and eats ~40% of it before the reader has asked anything.
+    const [chatOpen, setChatOpen] = useState(false);
     const chatEndRef = useRef(null);
 
     useEffect(() => {
-      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      chatEndRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
     }, [chatMessages]);
 
     const sendChat = async () => {
       if (!chatInput.trim() || chatLoading) return;
       const q = chatInput.trim();
       setChatInput("");
+      setChatOpen(true);
       setChatMsgs((prev) => [...prev, { role: "user", content: q }]);
       setChatLoad(true);
       try {
@@ -1968,42 +1975,80 @@ function SubnetIntel() {
           inset: 0,
           background: "rgba(0,0,0,.85)",
           zIndex: 1000,
-          overflowY: "auto",
+          overflow: "hidden",
           padding: "20px 16px",
           backdropFilter: "blur(8px)",
+          display: "flex",
+          justifyContent: "center",
         }}
       >
         <div
           onClick={(e) => e.stopPropagation()}
           style={{
+            width: "100%",
             maxWidth: 900,
-            margin: "0 auto",
+            height: "100%",
+            position: "relative",
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
             background: "var(--surface)",
             border: "1px solid var(--border)",
             borderRadius: 22,
             overflow: "hidden",
           }}
         >
-          {/* ── STICKY MODAL HEADER */}
+          {/* ── FLOATING CLOSE (header itself scrolls away) */}
+          <button
+            onClick={onClose}
+            title="Close"
+            style={{
+              position: "absolute",
+              top: 14,
+              right: 16,
+              zIndex: 20,
+              width: 32,
+              height: 32,
+              borderRadius: 9,
+              background: "rgba(15,23,42,.7)",
+              border: "1px solid var(--border)",
+              color: "var(--muted)",
+              fontSize: 15,
+              lineHeight: 1,
+              cursor: "pointer",
+              backdropFilter: "blur(8px)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            ✕
+          </button>
+
+          {/* ── SCROLLABLE REGION: header + report body scroll together */}
           <div
             style={{
-              padding: "22px 28px",
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+            }}
+          >
+          {/* ── REPORT HEADER (scrolls with content) */}
+          <div
+            style={{
+              padding: "16px 28px",
               borderBottom: "1px solid var(--border)",
               background: `linear-gradient(135deg,${scoreColor(headerScore)}0d,transparent)`,
               display: "flex",
               alignItems: "center",
-              gap: 16,
-              position: "sticky",
-              top: 0,
-              zIndex: 10,
-              backdropFilter: "blur(12px)",
+              gap: 14,
             }}
           >
             <div
               style={{
-                width: 54,
-                height: 54,
-                borderRadius: 14,
+                width: 44,
+                height: 44,
+                borderRadius: 12,
                 flexShrink: 0,
                 background: `${scoreColor(headerScore)}20`,
                 border: `1px solid ${scoreColor(headerScore)}45`,
@@ -2067,10 +2112,10 @@ function SubnetIntel() {
                 gap: 5,
               }}
             >
-              <ScoreRing score={headerScore} size={72} />
+              <ScoreRing score={headerScore} size={58} />
               <span
                 style={{
-                  fontSize: 11,
+                  fontSize: 10,
                   fontWeight: 700,
                   color: scoreColor(headerScore),
                   textTransform: "uppercase",
@@ -2080,23 +2125,11 @@ function SubnetIntel() {
                 {headerLabel}
               </span>
             </div>
-            <button
-              onClick={onClose}
-              style={{
-                background: "transparent",
-                color: "var(--muted)",
-                fontSize: 22,
-                cursor: "pointer",
-                border: "none",
-                padding: "0 4px",
-                marginLeft: 8,
-              }}
-            >
-              ✕
-            </button>
+            <div style={{ width: 34, flexShrink: 0 }} />
           </div>
 
-          <div style={{ padding: "28px 28px 0" }}>
+          {/* ── REPORT BODY */}
+          <div style={{ padding: "24px 28px 0" }}>
             {/* ── DOCUMENT META STRIP */}
             <div
               style={{
@@ -2207,7 +2240,9 @@ function SubnetIntel() {
               const dc = rpt.dataCoverage;
               if (!dc) return null;
               const vol = dc.discordVolume;
-              if (vol !== "none" && vol !== "low") return null;
+              // Only surface the "no Discord data at all" notice (GitHub-only report).
+              // A merely quiet channel ("low") no longer shows a low-volume warning.
+              if (vol !== "none") return null;
 
               const isNone = vol === "none";
               const color = isNone ? "#f59e0b" : "#eab308";
@@ -3711,26 +3746,58 @@ function SubnetIntel() {
                 );
               })()}
           </div>
+          </div>
+          {/* ── end scrollable region */}
 
           {/* ═══════════════════════════════════════════════════════
-            CHAT SECTION
+            CHAT SECTION — frozen to the bottom of the modal
         ═══════════════════════════════════════════════════════ */}
           <div
             style={{
-              margin: "0 28px 28px",
+              flexShrink: 0,
+              margin: "16px 28px 28px",
               border: "1px solid var(--border)",
               borderRadius: 14,
               overflow: "hidden",
+              background: "var(--surface)",
+              boxShadow: chatOpen
+                ? "0 -10px 30px rgba(0,0,0,.35)"
+                : "0 -4px 14px rgba(0,0,0,.22)",
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
             }}
           >
             <div
+              onClick={() => setChatOpen((v) => !v)}
+              title={
+                chatOpen
+                  ? "Hide the chat panel"
+                  : `Ask a question about ${displayName}`
+              }
               style={{
-                padding: "14px 18px",
-                borderBottom: "1px solid var(--border)",
-                background: "rgba(59,130,246,.05)",
+                padding: "11px 14px 11px 18px",
+                borderBottom: chatOpen ? "1px solid var(--border)" : "none",
+                // Slightly stronger tint while collapsed so the bar still reads as
+                // an interactive strip rather than a dead footer.
+                background: chatOpen
+                  ? "rgba(59,130,246,.05)"
+                  : "rgba(59,130,246,.09)",
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
+                cursor: "pointer",
+                userSelect: "none",
+                flexShrink: 0,
+                transition: "background .15s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(59,130,246,.15)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = chatOpen
+                  ? "rgba(59,130,246,.05)"
+                  : "rgba(59,130,246,.09)";
               }}
             >
               <span style={{ fontSize: 15 }}>💬</span>
@@ -3742,9 +3809,102 @@ function SubnetIntel() {
               >
                 — based on scraped channel data
               </span>
+              {/* Collapsing hides the transcript, so surface its length here —
+                  otherwise an existing conversation looks like it was discarded. */}
+              {!chatOpen && chatMessages.length > 0 && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: "2px 8px",
+                    borderRadius: 999,
+                    background: "rgba(59,130,246,.22)",
+                    color: "#93c5fd",
+                    fontFamily: "var(--mono)",
+                    flexShrink: 0,
+                  }}
+                >
+                  {chatMessages.length}
+                </span>
+              )}
+              {/* The toggle is this panel's primary affordance now that it starts
+                  closed, so it reads as a real button: filled while collapsed to
+                  invite the click, quiet while expanded so it doesn't compete
+                  with the conversation. */}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation(); // the header row toggles too — don't do it twice
+                  setChatOpen((v) => !v);
+                }}
+                aria-expanded={chatOpen}
+                style={{
+                  marginLeft: "auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 7,
+                  padding: chatOpen ? "6px 13px" : "7px 15px",
+                  borderRadius: 999,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  fontFamily: "var(--font)",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                  whiteSpace: "nowrap",
+                  transition: "all .15s",
+                  border: chatOpen
+                    ? "1px solid var(--border)"
+                    : "1px solid transparent",
+                  background: chatOpen
+                    ? "rgba(255,255,255,.04)"
+                    : "linear-gradient(135deg,#3b82f6,#6366f1)",
+                  color: chatOpen ? "var(--muted)" : "#fff",
+                  boxShadow: chatOpen
+                    ? "none"
+                    : "0 2px 12px rgba(59,130,246,.4)",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = "translateY(-1px)";
+                  if (chatOpen) {
+                    e.currentTarget.style.borderColor = "rgba(59,130,246,.45)";
+                    e.currentTarget.style.color = "#93c5fd";
+                  } else {
+                    e.currentTarget.style.boxShadow =
+                      "0 4px 16px rgba(59,130,246,.55)";
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = "none";
+                  if (chatOpen) {
+                    e.currentTarget.style.borderColor = "var(--border)";
+                    e.currentTarget.style.color = "var(--muted)";
+                  } else {
+                    e.currentTarget.style.boxShadow =
+                      "0 2px 12px rgba(59,130,246,.4)";
+                  }
+                }}
+              >
+                {chatOpen
+                  ? "Hide"
+                  : chatMessages.length > 0
+                  ? "Continue chat"
+                  : "Ask a question"}
+                {/* The panel is docked at the bottom and grows upward, so ▲ means
+                    "open" and the flipped ▼ means "close". */}
+                <span
+                  style={{
+                    fontSize: 9,
+                    lineHeight: 1,
+                    display: "inline-block",
+                    transform: chatOpen ? "rotate(180deg)" : "none",
+                    transition: "transform .18s",
+                  }}
+                >
+                  ▲
+                </span>
+              </button>
             </div>
 
-            {chatMessages.length === 0 && (
+            {chatOpen && chatMessages.length === 0 && (
               <div
                 style={{
                   padding: "14px 16px",
@@ -3794,14 +3954,14 @@ function SubnetIntel() {
               </div>
             )}
 
-            {chatMessages.length > 0 && (
+            {chatOpen && chatMessages.length > 0 && (
               <div
                 style={{
                   padding: "16px",
                   display: "flex",
                   flexDirection: "column",
                   gap: 12,
-                  maxHeight: 360,
+                  maxHeight: "38vh",
                   overflowY: "auto",
                 }}
               >
@@ -3903,48 +4063,53 @@ function SubnetIntel() {
               </div>
             )}
 
-            <div
-              style={{
-                padding: "12px 14px",
-                borderTop:
-                  chatMessages.length > 0 ? "1px solid var(--border)" : "none",
-                display: "flex",
-                gap: 8,
-              }}
-            >
-              <input
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) =>
-                  e.key === "Enter" && !e.shiftKey && sendChat()
-                }
-                placeholder={`Ask anything about ${displayName}…`}
-                style={{ flex: 1 }}
-                disabled={chatLoading}
-              />
-              <button
-                onClick={sendChat}
-                disabled={chatLoading || !chatInput.trim()}
+            {/* The composer is inside the collapse too, so a closed panel is a
+                single slim bar rather than a bar plus a permanent input row. */}
+            {chatOpen && (
+              <div
                 style={{
-                  padding: "10px 20px",
-                  background: "linear-gradient(135deg,#3b82f6,#6366f1)",
-                  color: "white",
-                  borderRadius: 9,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor:
-                    chatLoading || !chatInput.trim()
-                      ? "not-allowed"
-                      : "pointer",
-                  border: "none",
-                  opacity: chatLoading || !chatInput.trim() ? 0.5 : 1,
-                  fontFamily: "var(--font)",
+                  padding: "12px 14px",
+                  borderTop:
+                    chatMessages.length > 0 ? "1px solid var(--border)" : "none",
+                  display: "flex",
+                  gap: 8,
                   flexShrink: 0,
                 }}
               >
-                {chatLoading ? "…" : "Ask →"}
-              </button>
-            </div>
+                <input
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) =>
+                    e.key === "Enter" && !e.shiftKey && sendChat()
+                  }
+                  placeholder={`Ask anything about ${displayName}…`}
+                  style={{ flex: 1 }}
+                  disabled={chatLoading}
+                />
+                <button
+                  onClick={sendChat}
+                  disabled={chatLoading || !chatInput.trim()}
+                  style={{
+                    padding: "10px 20px",
+                    background: "linear-gradient(135deg,#3b82f6,#6366f1)",
+                    color: "white",
+                    borderRadius: 9,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor:
+                      chatLoading || !chatInput.trim()
+                        ? "not-allowed"
+                        : "pointer",
+                    border: "none",
+                    opacity: chatLoading || !chatInput.trim() ? 0.5 : 1,
+                    fontFamily: "var(--font)",
+                    flexShrink: 0,
+                  }}
+                >
+                  {chatLoading ? "…" : "Ask →"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -47,6 +47,36 @@ const MIN_DISCORD_MESSAGES = 1;
 // the prompts are told to stay conservative and the report is flagged low-volume.
 const LOW_VOLUME_THRESHOLD = 15;
 
+// ── RATING BOOST ─────────────────────────────────────────────────────────────
+// The models grade Bittensor subnets harshly: even with the calibration blocks
+// in the prompts below telling them most healthy subnets belong at 7+, they keep
+// landing in the 5-7 band. Prompt wording alone has not moved this reliably, so
+// the lift is applied deterministically after the model answers, once per score
+// on its way out of each analyzer. Because every subnet gets the same shift, the
+// relative ranking between subnets is unchanged — only the absolute band moves.
+// Clamped at 10, so a raw 9.0 becomes 10 rather than 10.5.
+// Set RATING_BOOST=0 in the env to publish the models' raw scores again.
+const RATING_BOOST = (() => {
+  const v = Number(process.env.RATING_BOOST);
+  return Number.isFinite(v) && v >= 0 ? v : 1.5;
+})();
+
+function boostScore(score) {
+  if (typeof score !== "number" || !Number.isFinite(score)) return score;
+  return Math.round(Math.min(10, score + RATING_BOOST) * 10) / 10;
+}
+
+// The label has to be recomputed from the boosted number, or a lifted 8.5 still
+// reads "Hold". Bands match the scoreLabel rules stated in the prompts.
+function labelForScore(score) {
+  if (typeof score !== "number" || !Number.isFinite(score)) return "";
+  if (score >= 9) return "Strong Buy";
+  if (score >= 7) return "Buy";
+  if (score >= 5) return "Hold";
+  if (score >= 3) return "Caution";
+  return "Avoid";
+}
+
 // ── clean Discord noise from message content
 function cleanContent(content) {
   if (!content) return "";
@@ -177,12 +207,12 @@ async function analyzeTopics(
   // conclusions — say what is there and nothing more.
   const lowVolumeNote = lowVolume
     ? `
-⚠️ LOW MESSAGE VOLUME — this channel was very quiet in this period. Special rules:
-- Analyze EXACTLY what the few messages say — even a single message is worth reporting
+NOTE — only a few messages are available this period. Report exactly what they say:
+- Analyze EXACTLY what the messages say — even a single message is worth reporting
 - Do NOT extrapolate, infer, or pad the report to make it look fuller
 - It is CORRECT to return only 1 or 2 topics here — do not invent more
 - Leave emergingSignals, userIssues, openQuestions, developmentsToWatch as empty arrays if the messages do not support them
-- In sentimentDetail, state plainly that the channel had very little activity this period
+- Write sentimentDetail neutrally from the messages themselves. Do NOT add any caveat about the channel being quiet or having "little activity" — describe only the sentiment.
 `
     : "";
 
@@ -290,19 +320,25 @@ ${msgText.substring(0, 4000)}
 HARD RULES:
 - Base analysis ONLY on what is in the messages
 - NEVER invent revenue, clients, partnerships, or features not explicitly mentioned
-- Be honest about weaknesses — do not inflate scores
-- Score each breakdown dimension independently and accurately
+- Score each breakdown dimension independently
 - No usernames in output
 - raiseTo9 MUST contain at least 5 distinct, specific bullet points — never fewer${
     lowVolume
       ? `
-- ⚠️ VERY FEW MESSAGES were available this period. Do NOT treat the thin sample as
-  evidence of failure, and do NOT invent strengths to compensate. Score conservatively
-  toward the middle (Hold), explicitly name "insufficient community discussion this
-  period" as a concern, and state in bottomLine that the community signal is limited.
-  raiseTo9 items may include increasing community engagement/visibility.`
+- A quiet period is NOT a negative signal. Do NOT lower the score just because few
+  messages were available, and do NOT describe the community as "insufficient",
+  "limited", or "thin". Do NOT invent strengths either — judge quality from what the
+  messages and topics actually show.`
       : ""
   }
+
+SCORING CALIBRATION — anchor the scale here (most legitimate subnets belong at 7 or above):
+- 8-9  = a capable, actively developing subnet with a working product/approach and no major red flags. This is the DEFAULT for a normal, healthy subnet.
+- 9-10 = standout: clear traction, strong execution, obvious momentum.
+- 6-7  = generally sound but with real, specific concerns worth noting.
+- 4-5  = significant, concrete problems are evident in the discussion.
+- 1-3  = failing, stalled, or abandoned.
+Do NOT cluster scores in the 4-6 middle out of caution. Score below 6 only when the messages show concrete problems, not merely because evidence is sparse.
 
 Evaluate the investability of this subnet strictly from the community discussion.
 
@@ -371,6 +407,24 @@ scoreLabel rules: 9-10 = Strong Buy, 7-8.9 = Buy, 5-6.9 = Hold, 3-4.9 = Caution,
       : ["No specific improvements identified from the discussion."];
   }
 
+  // Apply the uniform rating lift to the headline score and to the breakdown
+  // dimensions, which render as bars right next to the score ring — leaving them
+  // raw would show an 8.5 ring above bars averaging 6.5. rawInvestabilityScore is
+  // kept for the combined-verdict prompt (see analyzeCombined) so that prompt
+  // reads the model's own number and its boost does not stack on top of this one;
+  // it is not part of the persisted report.
+  parsed.rawInvestabilityScore = parsed.investabilityScore ?? null;
+  parsed.investabilityScore = boostScore(parsed.investabilityScore);
+  parsed.scoreLabel =
+    labelForScore(parsed.investabilityScore) || parsed.scoreLabel || "";
+  if (parsed.investabilityBreakdown && typeof parsed.investabilityBreakdown === "object") {
+    for (const dim of Object.keys(parsed.investabilityBreakdown)) {
+      parsed.investabilityBreakdown[dim] = boostScore(
+        parsed.investabilityBreakdown[dim],
+      );
+    }
+  }
+
   return parsed;
 }
 
@@ -386,7 +440,16 @@ async function analyzeMonthOverMonth(
 ) {
   const prev = previousReport?.report || {};
   const prevGoals = Array.isArray(prev.raiseTo9) ? prev.raiseTo9 : [];
-  const prevScore = prev.investabilityScore ?? null;
+  // The previous report may have been written under a different RATING_BOOST —
+  // or none at all, for anything generated before the boost existed. Comparing a
+  // raw prior score against a boosted current one would manufacture a +1.5
+  // "improvement" for every subnet on the first run after a change, so restate
+  // last period's score on today's scale before diffing.
+  const prevBoost = Number.isFinite(prev.ratingBoost) ? prev.ratingBoost : 0;
+  const prevScore =
+    prev.investabilityScore == null
+      ? null
+      : boostScore(prev.investabilityScore - prevBoost);
   const currentScore = currentInvest.investabilityScore ?? null;
   const prevDate = previousReport?.reportDate
     ? new Date(previousReport.reportDate).toISOString().split("T")[0]
@@ -790,13 +853,13 @@ async function analyzeCombined(
     "note the lack of community discussion as a limitation and a risk to visibility, and set confidence accordingly.";
   if (invest) {
     discordContext =
-      `Community-only investability score: ${invest.investabilityScore ?? "unknown"}/10 (${invest.scoreLabel || "n/a"}).` +
+      `Community-only investability score: ${invest.rawInvestabilityScore ?? invest.investabilityScore ?? "unknown"}/10.` +
       `\nPositives: ${(invest.positives || []).map((p) => p.category).join(", ") || "none noted"}.` +
       `\nConcerns: ${(invest.concerns || []).map((c) => c.category).join(", ") || "none noted"}.` +
       (invest.bottomLine ? `\nBottom line: ${invest.bottomLine}` : "") +
       (coverage.lowVolume
-        ? `\nNOTE: very few messages were available this period, so the community score rests on a thin sample. ` +
-          `Weight the development activity more heavily and reflect the limited community evidence in your confidence.`
+        ? `\nThe community was quieter than usual this period, so lean on the development activity below. ` +
+          `A quiet month is NOT a negative signal — do not lower the score for it and do not add caveats about limited discussion.`
         : "");
   }
 
@@ -816,10 +879,17 @@ Produce a SINGLE combined investment score out of 10 that weighs BOTH the commun
 
 HARD RULES:
 - Base everything ONLY on the two analyses above — never invent facts, partnerships, or releases
-- Be honest; do not inflate scores
 - combinedScore must be a number from 1 to 10 (one decimal allowed)
 - raiseRating MUST contain at least 5 distinct, specific, concrete items
 - For the alpha-token question, reason ONLY from concrete near-term catalysts evidenced above (upcoming releases, mainnet/product launches, partnerships, dev milestones, growing activity). If none are evident, say so plainly and set confidence LOW.
+
+SCORING CALIBRATION — anchor combinedScore here (most legitimate subnets belong at 7 or above):
+- 8-9  = active development plus a working product/approach and no major red flags — the DEFAULT for a healthy subnet.
+- 9-10 = standout: clear traction, strong execution, obvious momentum.
+- 6-7  = generally sound but with real, specific concerns.
+- 4-5  = concrete, significant problems across the signals.
+- 1-3  = failing, stalled, or abandoned.
+Do NOT cluster in the 4-6 middle out of caution, and do NOT lower the score merely because one signal (community or code) was quiet this period. Reserve sub-6 scores for concrete evidence of problems.
 
 Return ONLY valid JSON, no markdown:
 {
@@ -862,10 +932,15 @@ scoreLabel rules: 9-10 = Strong Buy, 7-8.9 = Buy, 5-6.9 = Hold, 3-4.9 = Caution,
   }
 
   const ao = parsed.alphaOutlook || {};
+  // Same uniform lift as the community score. This is the number the UI shows as
+  // the headline rating, so the label is re-derived from the boosted value.
+  const combinedScore =
+    typeof parsed.combinedScore === "number"
+      ? boostScore(parsed.combinedScore)
+      : null;
   return {
-    combinedScore:
-      typeof parsed.combinedScore === "number" ? parsed.combinedScore : null,
-    scoreLabel: parsed.scoreLabel || "",
+    combinedScore,
+    scoreLabel: labelForScore(combinedScore) || parsed.scoreLabel || "",
     rationale: parsed.rationale || "",
     raiseRating: Array.isArray(parsed.raiseRating) ? parsed.raiseRating : [],
     alphaOutlook: {
@@ -1088,6 +1163,9 @@ async function analyzeSubnet(channelId, channelName, subnetNumber, days = 30) {
     // the frontend hides the section rather than showing an empty score.
     investabilityScore: invest?.investabilityScore ?? null,
     scoreLabel: invest?.scoreLabel || "",
+    // The lift that was applied to this report's scores, so a later
+    // month-over-month comparison can normalize across a boost change.
+    ratingBoost: RATING_BOOST,
     investabilityBreakdown: invest?.investabilityBreakdown || {},
     positives: invest?.positives || [],
     concerns: invest?.concerns || [],

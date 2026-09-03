@@ -26,8 +26,12 @@ const subnetReportSchema = new mongoose.Schema({
     // Section 2 — Investability
     // null when the Discord channel had no usable messages this period (the report
     // is then built from GitHub alone) — see dataCoverage below.
-    investabilityScore: Number,   // 1-10
+    investabilityScore: Number,   // 1-10 (after ratingBoost)
     scoreLabel:         String,   // Strong Buy | Buy | Hold | Caution | Avoid
+    // Uniform lift added to investabilityScore, the breakdown and combinedScore
+    // when this report was generated (RATING_BOOST). Recorded so month-over-month
+    // can compare across a boost change instead of reading it as real movement.
+    ratingBoost:        Number,
     investabilityBreakdown: {
       technology:          Number,
       teamExecution:       Number,

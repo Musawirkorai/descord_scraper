@@ -24,6 +24,23 @@ const scraperRoutes = require('./routes/scraper');
 const app = express();
 const httpServer = createServer(app);
 
+// Behind a reverse proxy every request arrives from the proxy's own socket, with
+// the real client IP in X-Forwarded-For. Express defaults `trust proxy` to false,
+// so req.ip would be the proxy and the rate limiter below would bucket every user
+// on the internet together — express-rate-limit refuses to do that silently and
+// throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR instead. There is always a proxy in
+// front of this app: the nginx container in docker/docker-compose.yml
+// (frontend/nginx.conf sets X-Forwarded-For), and the CRA dev-server proxy from
+// frontend/package.json in local development.
+//
+// This is deliberately a HOP COUNT and not `true`. Trusting the whole chain would
+// let any client send its own X-Forwarded-For and mint a fresh rate-limit bucket
+// per request, which defeats the limiter entirely. 1 = the single nginx/dev proxy;
+// set TRUST_PROXY=2 if you add another layer (e.g. a host-level nginx terminating
+// TLS), or TRUST_PROXY=0 when the app is exposed directly with no proxy at all.
+const trustProxyHops = Number.parseInt(process.env.TRUST_PROXY ?? '', 10);
+app.set('trust proxy', Number.isInteger(trustProxyHops) && trustProxyHops >= 0 ? trustProxyHops : 1);
+
 // Security & middleware
 app.use(helmet());
 app.use(compression());

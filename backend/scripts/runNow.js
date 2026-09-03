@@ -13,7 +13,7 @@ const {
 
 // Subnets to run, e.g. `node scripts/runNow.js 9 10 11`. Defaults to 9, 10, 11.
 const subnets = process.argv.slice(2).map(Number).filter(Boolean);
-const targets = subnets.length ? subnets : [3,4,5];
+const targets = subnets.length ? subnets : [3];
 
 (async () => {
   await mongoose.connect(process.env.MONGODB_URI);

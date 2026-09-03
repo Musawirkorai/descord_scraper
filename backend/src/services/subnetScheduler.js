@@ -12,6 +12,7 @@ const Channel = require("../models/Channel");
 const SubnetReport = require("../models/SubnetReport");
 const SubnetSchedule = require("../models/SubnetSchedule");
 const SubnetConfig = require("../models/SubnetConfig");
+const Message = require("../models/Message");
 const { analyzeSubnet } = require("./subnetIntelService");
 const { backfillChannel } = require("./scraperService");
 const { scrapeRepo } = require("./githubScraper");
@@ -397,6 +398,41 @@ async function cleanupOldReports() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MESSAGE RETENTION — keep scraped messages for ~2 months, then delete older ones.
+// Mirrors the report retention above (same RETENTION_MONTHS window). Reports only
+// ever analyze a rolling ANALYSIS_WINDOW_DAYS (30-day) window, so any message past
+// the 2-month cutoff is never read again — deleting it is safe and keeps the
+// Message collection from growing without bound. Unlike reports there is nothing to
+// preserve per channel, so this is a plain age filter on discordCreatedAt (the time
+// the message was actually posted on Discord).
+// ─────────────────────────────────────────────────────────────────────────────
+async function cleanupOldMessages() {
+  try {
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - RETENTION_MONTHS);
+    cutoff.setHours(0, 0, 0, 0);
+
+    const res = await Message.deleteMany({
+      discordCreatedAt: { $lt: cutoff },
+    });
+
+    if (res.deletedCount > 0) {
+      logger.info(
+        `🧹 Message retention: deleted ${res.deletedCount} message(s) older than ${RETENTION_MONTHS} months (before ${cutoff.toISOString().split("T")[0]}).`,
+      );
+    } else {
+      logger.info(
+        `🧹 Message retention: nothing older than ${RETENTION_MONTHS} months to delete.`,
+      );
+    }
+    return res.deletedCount;
+  } catch (err) {
+    logger.error("Message retention cleanup failed:", err.message);
+    return 0;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Startup catch-up: if today's batch hasn't run yet (server was down at midnight,
 // just rebooted, or first launch), run it once shortly after boot so a day is
 // never missed. Guarded by lastRunDate so restarts during the day don't re-run.
@@ -450,6 +486,8 @@ function startScheduler(discordClient, serverId) {
       }
       // Prune reports older than the retention window after each daily run.
       await cleanupOldReports();
+      // Prune messages older than the retention window too.
+      await cleanupOldMessages();
     },
     { timezone },
   );
@@ -462,6 +500,8 @@ function startScheduler(discordClient, serverId) {
   // Prune old reports on startup too, so retention holds even if the server is
   // rarely up at the scheduled cron time.
   setTimeout(() => cleanupOldReports(), 30000);
+  // Same for old messages — trail slightly so the two deletes don't hit Mongo at once.
+  setTimeout(() => cleanupOldMessages(), 35000);
 }
 
 module.exports = {
@@ -469,5 +509,6 @@ module.exports = {
   runDailySubnetAnalysis,
   getSortedSubnetChannels,
   cleanupOldReports,
+  cleanupOldMessages,
   SUBNETS_PER_DAY,
 };
